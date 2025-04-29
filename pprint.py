@@ -25,12 +25,11 @@ def aprint(name, tensors,file_path=''):
 def tprint(obj, name=""):
     if True:
         if torch.is_tensor(obj):
-            print(f"TSJTensor '{name}' | Shape: {obj.shape} | Hash {tensor_md5(obj)} | \
-                    mean {obj.mean()} | sum {obj.sum()} |{obj.dtype} |\
-                    Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**2:.2f} MB "\
+            print(f"TSJTensor '{name}'| {obj.dtype}  | Shape: {obj.shape} | Hash {tensor_md5(obj)} | sum {obj.sum()} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**2:.2f} MB | isNan {torch.isnan(obj).any()}"\
                     , flush=True)
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
             print(f"TSJObject '{name}' is a nn.Module. |Total parameters: {total_params}")
         else:
             print(f"TSJObject '{name}' {obj}")
+            # mean {obj.mean()} 
