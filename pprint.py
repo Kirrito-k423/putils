@@ -18,14 +18,17 @@ def aprint(name, tensors,file_path=''):
         tprint(tensors, name)
     elif isinstance(tensors, tuple) or isinstance(tensors, list):
         for tensor in tensors:
-            tprint(name, tensor)
+            tprint(tensor, name)
     else:
         print(name , type(tensors))
 
 def tprint(obj, name=""):
-    if True and torch.distributed.get_rank() == 0 :
+    if True:
         if torch.is_tensor(obj):
-            print(f"TSJTensor '{name}' | Shape: {obj.shape} | Hash {tensor_md5(obj)} | {obj.dtype} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**2:.2f} MB")
+            print(f"TSJTensor '{name}' | Shape: {obj.shape} | Hash {tensor_md5(obj)} | \
+                    mean {obj.mean()} | sum {obj.sum()} |{obj.dtype} |\
+                    Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**2:.2f} MB "\
+                    , flush=True)
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
             print(f"TSJObject '{name}' is a nn.Module. |Total parameters: {total_params}")
