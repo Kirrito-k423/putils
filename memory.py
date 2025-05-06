@@ -57,16 +57,16 @@ def get_tensor_size(tensor):
 # print model size
 def pmsize(model):
     if torch.distributed.get_rank() == 0:
-        print(f"world size is {torch.distributed.get_world_size()}")
+        print(f"world size is {torch.distributed.get_world_size()}", flush=True)
         for name, module in model.named_modules():
             num_params = 0
             total_size = 0
-            print(f"\nLayer detail")
+            print(f"\nLayer detail" , flush=True)
             for param_name, param in module.named_parameters():
                 num_params += param.numel()
                 tmp_size = get_tensor_size(param)
                 total_size += tmp_size
-                print(f"    {param_name}: shape={tuple(param.shape)} | dtype={param.dtype} | device={param.device} | size {tmp_size} GB")
+                print(f"    {param_name}: shape={tuple(param.shape)} | dtype={param.dtype} | device={param.device} | size {tmp_size} GB", flush=True)
             break
         for name, module in model.named_modules():
             total_size = 0
@@ -74,4 +74,4 @@ def pmsize(model):
                 # tmp_size = get_tensor_size(param) / (1024 ** 3)
                 tmp_size = get_tensor_size(param)
                 total_size += tmp_size
-            print(f"layer {name} {total_size} GB")
+            print(f"layer {name} {total_size} GB", flush=True)
