@@ -57,6 +57,7 @@ def get_tensor_size(tensor):
 # print model size
 def pmsize(model):
     if torch.distributed.get_rank() == 0:
+        print(model)
         print(f"world size is {torch.distributed.get_world_size()}", flush=True)
         for name, module in model.named_modules():
             num_params = 0
