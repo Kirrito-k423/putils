@@ -1,6 +1,7 @@
 from megatron.training.utils import report_memory
 import torch
 from contextlib import contextmanager
+from .pprint import tprint
 
 def pmem_str():
     torch.npu.synchronize()
@@ -60,19 +61,12 @@ def pmsize(model):
         print(model)
         print(f"world size is {torch.distributed.get_world_size()}", flush=True)
         for name, module in model.named_modules():
-            num_params = 0
-            total_size = 0
             print(f"\nLayer detail" , flush=True)
             for param_name, param in module.named_parameters():
-                num_params += param.numel()
-                tmp_size = get_tensor_size(param)
-                total_size += tmp_size
-                print(f"    {param_name}: shape={tuple(param.shape)} | dtype={param.dtype} | device={param.device} | size {tmp_size} GB", flush=True)
+                tprint(param,param_name)
             break
         for name, module in model.named_modules():
             total_size = 0
             for param_name, param in module.named_parameters():
-                # tmp_size = get_tensor_size(param) / (1024 ** 3)
-                tmp_size = get_tensor_size(param)
-                total_size += tmp_size
+                total_size += get_tensor_size(param)
             print(f"layer {name} {total_size} GB", flush=True)

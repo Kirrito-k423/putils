@@ -23,13 +23,14 @@ def aprint(name, tensors,file_path=''):
         print(name , type(tensors))
 
 def tprint(obj, name=""):
+    rank = torch.distributed.get_rank()
     if True:
         if torch.is_tensor(obj):
-            print(f"TSJTensor '{name}'| {obj.dtype}  | Shape: {obj.shape} | Hash {tensor_md5(obj)} | sum {obj.sum()} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**2:.2f} MB | isNan {torch.isnan(obj).any()}"\
+            print(f"rank {rank} '{name}'| {obj.dtype}  | Shape: {obj.shape} | Hash {tensor_md5(obj)} | sum {obj.sum()} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()}"\
                     , flush=True)
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
-            print(f"TSJObject '{name}' is a nn.Module. |Total parameters: {total_params}")
+            print(f"rank {rank} '{name}' is a nn.Module. |Total parameters: {total_params}")
         else:
-            print(f"TSJObject '{name}' {obj}")
+            print(f"rank {rank} '{name}' {obj}")
             # mean {obj.mean()} 
