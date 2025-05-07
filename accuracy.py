@@ -1,9 +1,9 @@
 import torch
 import torch.distributed
 
-from .pprint import aprint
+from .pprint import aprint, ifdebug
 
-record_rank=0
+record_rank=1
 
 def hook_func(name, module, file_path):
     def hook_function(module, inputs, outputs):
@@ -20,15 +20,17 @@ def hookt(str, t):
     def hook_tensor(grad):
         aprint(str,grad)
     rank = torch.distributed.get_rank()
-    if rank == record_rank:
-        if t.requires_grad:
-            t.register_hook(hook_tensor)
-            print(f"Tensor {str} hook success.")
-        else:
-            print(f"Tensor {str} does not require gradient. Skipping hook registration.")
-            t.requires_grad_(True)  # 显式启用梯度
-            t.register_hook(hook_tensor)
-            print(f"Tensor {str} force hook success.")
+    if ifdebug():
+        if rank == record_rank:
+            aprint(f"forward {str}", t)
+            if t.requires_grad:
+                t.register_hook(hook_tensor)
+                print(f"Tensor {str} hook success.")
+            else:
+                print(f"Tensor {str} does not require gradient. Skipping hook registration.")
+                t.requires_grad_(True)  # 显式启用梯度
+                t.register_hook(hook_tensor)
+                print(f"Tensor {str} force hook success.")
 
 def hook_for_model(model):
     exclude = []
@@ -39,11 +41,17 @@ def hook_for_model(model):
     exclude.append("text_decoder.decoder.layers.1.cross_attention")
     exclude.append("text_decoder.decoder.layers.1.cross_attn_bda")
     
-
-    rank = torch.distributed.get_rank()
-    if rank == record_rank:
-        for name, module in model.named_modules():
-            if name not in exclude:
-                print(name)
-                module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
-                module.register_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
+    
+    if ifdebug():
+        rank = torch.distributed.get_rank()
+        print(f"hook_for_model record rank {rank}")
+        if rank == record_rank:
+            for name, module in model.named_modules():
+                if name.startswith('image_encoder.encoder.blocks.'):
+                    continue 
+                if name.startswith('text_decoder.decoder.layers.1.mlp.experts'):
+                    continue 
+                if name not in exclude:
+                    print(name)
+                    module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
+                    module.register_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
