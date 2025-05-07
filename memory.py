@@ -1,7 +1,7 @@
 from megatron.training.utils import report_memory
 import torch
 from contextlib import contextmanager
-from .pprint import tprint
+from .pprint import tprint, ifdebug
 
 def pmem_str():
     torch.npu.synchronize()
@@ -24,10 +24,13 @@ def pmem_str():
 def pmemory(tmp_str):
     tmp = f"TSJPMEM {tmp_str}"
     mem_str = pmem_str()
-    with torch.profiler.record_function(tmp+mem_str):
-        report_memory(f"before {tmp}")
+    if ifdebug():
+        with torch.profiler.record_function(tmp+mem_str):
+            report_memory(f"before {tmp}")
+            yield
+            report_memory(f"after {tmp}")
+    else:
         yield
-        report_memory(f"after {tmp}")
 
 
 
@@ -57,7 +60,7 @@ def get_tensor_size(tensor):
 
 # print model size
 def pmsize(model):
-    if torch.distributed.get_rank() == 0:
+    if torch.distributed.get_rank() == 0 and ifdebug():
         print(model)
         print(f"world size is {torch.distributed.get_world_size()}", flush=True)
         for name, module in model.named_modules():

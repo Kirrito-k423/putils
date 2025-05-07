@@ -2,6 +2,10 @@
 import torch
 import torch.distributed
 import hashlib
+import os
+
+def ifdebug():
+    return int(os.environ.get("TSJPRINT", 0)) == 1
 
 def tensor_md5(tensor: torch.Tensor) -> str:
     if tensor.dtype == torch.bfloat16:
@@ -14,17 +18,18 @@ def tensor_md5(tensor: torch.Tensor) -> str:
     return hashlib.md5(tensor_bytes).hexdigest()
 
 def aprint(name, tensors,file_path=''):
-    if isinstance(tensors, torch.Tensor):
-        tprint(tensors, name)
-    elif isinstance(tensors, tuple) or isinstance(tensors, list):
-        for tensor in tensors:
-            tprint(tensor, name)
-    else:
-        print(name , type(tensors))
+    if ifdebug():
+        if isinstance(tensors, torch.Tensor):
+            tprint(tensors, name)
+        elif isinstance(tensors, tuple) or isinstance(tensors, list):
+            for tensor in tensors:
+                tprint(tensor, name)
+        else:
+            print(name , type(tensors))
 
 def tprint(obj, name=""):
     rank = torch.distributed.get_rank()
-    if True:
+    if ifdebug():
         if torch.is_tensor(obj):
             print(f"rank {rank} '{name}'| {obj.dtype}  | Shape: {obj.shape} | Hash {tensor_md5(obj)} | sum {obj.sum()} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()}"\
                     , flush=True)
