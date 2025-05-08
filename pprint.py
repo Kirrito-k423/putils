@@ -3,6 +3,7 @@ import torch
 import torch.distributed
 import hashlib
 import os
+from megatron.core import parallel_state
 
 def ifdebug():
     return int(os.environ.get("TSJPRINT", 0)) == 1
@@ -30,7 +31,7 @@ def aprint(name, tensors,file_path=''):
 def tprint(obj, name=""):
     if ifdebug():
         if torch.is_tensor(obj):
-            print(f"'{name}'| sum {obj.sum()} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()} | {obj.dtype}  | Shape: {obj.shape} | Hash {tensor_md5(obj)} "\
+            print(f"'{name}'| Hash {tensor_md5(obj)} | sum {obj.sum()} | Shape: {obj.shape} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()} | {obj.dtype}  "\
                     , flush=True)
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
@@ -38,3 +39,19 @@ def tprint(obj, name=""):
         else:
             print(f"'{name}' {obj}")
             # mean {obj.mean()} 
+
+# print part model weight
+def wprint(pmodel, name="wprint"):
+    rank =  torch.distributed.get_rank()
+    for param_name, param in pmodel.named_parameters():
+        tprint(param,f"{name} rank {rank} {param_name}")
+
+
+def dis_print(sth, sstr="", toTprint=True):
+    rank = torch.distributed.get_rank()
+    dprank = parallel_state.get_data_parallel_rank()
+    print_str = f"rank{rank} dp{dprank} {sstr} "
+    if toTprint:
+        tprint(sth, print_str)
+    else:
+        print(f"{print_str} {sth}")
