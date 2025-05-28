@@ -55,3 +55,11 @@ def dis_print(sth, sstr="", toTprint=True):
         tprint(sth, print_str)
     else:
         print(f"{print_str} {sth}")
+
+
+_printed_tags = set()
+def print_once_by_tag(tag, message=""):
+    global _printed_tags
+    if tag not in _printed_tags:
+        print(f"[{tag}] {message}")
+        _printed_tags.add(tag)
