@@ -1,7 +1,8 @@
-from megatron.training.utils import report_memory
 import torch
+import torch_npu
 from contextlib import contextmanager
 from .pprint import tprint, ifdebug
+from .timer import mprint
 
 def pmem_str():
     torch.npu.synchronize()
@@ -17,6 +18,30 @@ def pmem_str():
     return string
 
 
+def report_memory(name):
+    """Simple GPU memory report."""
+    mega_bytes = 1024.0 * 1024.0
+    string = name + ' memory (MB)'
+    torch.npu.synchronize()
+    memory_allocated = torch.cuda.memory_allocated() / mega_bytes
+    string += ' | allocated: {}'.format(
+        memory_allocated)
+    string += ' | max allocated: {}'.format(
+        torch.cuda.max_memory_allocated() / mega_bytes)
+    string += ' | reserved: {}'.format(
+        torch.cuda.memory_reserved() / mega_bytes)
+    string += ' | max reserved: {}'.format(
+        torch.cuda.max_memory_reserved() / mega_bytes)
+    # if mpu.get_data_parallel_rank() == 0:
+    rank = torch.distributed.get_rank()
+    device = torch_npu.npu.current_device()
+    record_time = mprint("[Rank {} Device {}] {}".format(rank, device, string))
+    if memory_allocated > 43000:
+        # torch_npu.npu.memory._record_memory_history()
+        # xxx
+        torch_npu.npu.memory._dump_snapshot(f"oom_snapshot_rank_{rank}_device_{device}_{memory_allocated}_{record_time}.pickle")
+    torch.npu.synchronize()
+    
 # Usage:
 # with pmemory("fun xxx"):
 #     funx()

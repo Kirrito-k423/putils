@@ -31,3 +31,19 @@ def timer_decorator(name=None):
                 return func(*args, **kwargs)
         return wrapper
     return decorator
+
+def to_filename_safe(timestamp_str):
+    return (
+        timestamp_str.replace("-", "")
+                   .replace(":", "")
+                   .replace(" ", "_")
+                   .replace(".", "_ms")
+    )
+
+def mprint(msg, level="INFO"):
+    now = time.time()
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+    milliseconds = int((now * 1000) % 1000)
+    formatted_time = f"{timestamp}.{milliseconds:03d}"
+    print(f"[{formatted_time}] [{level}] {msg}")
+    return to_filename_safe(formatted_time)
