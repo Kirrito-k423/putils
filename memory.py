@@ -36,7 +36,7 @@ def report_memory(name):
     rank = torch.distributed.get_rank()
     device = torch_npu.npu.current_device()
     record_time = mprint("[Rank {} Device {}] {}".format(rank, device, string))
-    if memory_allocated > 43000:
+    if memory_allocated > 40000: # 40GB
         # torch_npu.npu.memory._record_memory_history()
         # xxx
         torch_npu.npu.memory._dump_snapshot(f"oom_snapshot_rank_{rank}_device_{device}_{memory_allocated}_{record_time}.pickle")
