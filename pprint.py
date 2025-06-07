@@ -4,6 +4,14 @@ import torch.distributed
 import hashlib
 import os
 from megatron.core import parallel_state
+from .write2file import log2file
+
+def log_or_print(content):
+    if os.getenv("log_tag", "") != "":
+        log2file(content)
+    else:
+        print(content, flush=True)
+
 
 def ifdebug():
     return int(os.environ.get("TSJPRINT", 0)) == 1
