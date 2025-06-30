@@ -39,8 +39,9 @@ def aprint(name, tensors,file_path=''):
 def tprint(obj, name=""):
     if ifdebug():
         if torch.is_tensor(obj):
-            print(f"'{name}'| Hash {tensor_md5(obj)} | sum {obj.sum()} | Shape: {obj.shape} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()} | {obj.dtype}  "\
-                    , flush=True)
+            tmp_str= f"'{name}'| Hash {tensor_md5(obj)} | sum {obj.sum()} | Shape: {obj.shape} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()} | {obj.dtype}  "
+            print(tmp_str, flush=True)
+            return tmp_str
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
             print(f"'{name}' is a nn.Module. |Total parameters: {total_params}")
