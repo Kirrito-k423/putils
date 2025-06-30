@@ -34,24 +34,22 @@ def hookt(str, t):
 
 def hook_for_model(model):
     exclude = []
-    exclude.append("image_encoder.encoder.encoder.layers.0.cross_attention")
-    exclude.append("image_encoder.encoder.encoder.layers.0.cross_attn_bda")
-    exclude.append("text_decoder.decoder.layers.0.cross_attention")
-    exclude.append("text_decoder.decoder.layers.0.cross_attn_bda")
-    exclude.append("text_decoder.decoder.layers.1.cross_attention")
-    exclude.append("text_decoder.decoder.layers.1.cross_attn_bda")
-
+    for i in range(24):
+        exclude.append(f"image_encoder.encoder.blocks.layers.{i}.cross_attention")
+        exclude.append(f"image_encoder.encoder.blocks.layers.{i}.cross_attn_bda")
+        
+    for i in range(40):
+        exclude.append(f"text_decoder.decoder.layers.{i}.cross_attention")
+        exclude.append(f"text_decoder.decoder.layers.{i}.cross_attn_bda")
 
     if ifdebug():
-        rank = torch.distributed.get_rank()
-        print(f"hook_for_model record rank {rank}")
-        if rank == record_rank:
-            for name, module in model.named_modules():
-                if name.startswith('image_encoder.encoder.blocks.'):
-                    continue
-                if name.startswith('text_decoder.decoder.layers.1.mlp.experts'):
-                    continue
-                if name not in exclude:
-                    print(name)
-                    module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
-                    module.register_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
+        rank = 0
+        # print(f"hook_for_model record rank {rank}")
+        # if rank == record_rank:
+        for name, module in model.named_modules():
+            if name.startswith('image_encoder.encoder.blocks.'):
+                continue
+            if name not in exclude:
+                print(name)
+                module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
+                module.register_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
