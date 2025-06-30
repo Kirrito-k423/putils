@@ -39,9 +39,18 @@ def aprint(name, tensors,file_path=''):
 def tprint(obj, name=""):
     if ifdebug():
         if torch.is_tensor(obj):
-            tmp_str= f"'{name}'| Hash {tensor_md5(obj)} | sum {obj.sum()} | Shape: {obj.shape} | Size {obj.numel()} | Memory size: {obj.element_size() * obj.numel() / 1024**3:.2f} GB | isNan {torch.isnan(obj).any()} | {obj.dtype}  "
-            print(tmp_str, flush=True)
-            return tmp_str
+            origin_dtype=obj.dtype
+            obj=obj.to(torch.float)
+            try:
+                tmp_mean = obj.mean()
+            except Exception as e:
+                tmp_mean = e
+            mem_size=obj.element_size() * obj.numel() / 1024**3
+            tmp_str1= f"'{name}'| {origin_dtype} | mean {tmp_mean} | sum {obj.sum()} | Shape: {obj.shape} | hash: {tensor_md5(obj)} | Size {obj.numel()} | Memory size: {mem_size:.2f} GB | isNan {torch.isnan(obj).any()} "
+            print(tmp_str1, flush=True)
+            tmp_str2=obj.flatten()[:10].tolist()
+            print(tmp_str2, flush=True)
+            return tmp_str1
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
             print(f"'{name}' is a nn.Module. |Total parameters: {total_params}")
