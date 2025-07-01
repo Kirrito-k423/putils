@@ -49,6 +49,8 @@ def hook_for_model(model):
         for name, module in model.named_modules():
             if name.startswith('image_encoder.encoder.blocks.'):
                 continue
+            if name.startswith('text_decoder.decoder.layers.'):
+                continue
             if name not in exclude:
                 print(name)
                 module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
