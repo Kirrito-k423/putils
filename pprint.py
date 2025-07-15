@@ -3,7 +3,6 @@ import torch
 import torch.distributed
 import hashlib
 import os
-from megatron.core import parallel_state
 from .write2file import log2file
 
 def log_or_print(content):
@@ -69,6 +68,7 @@ def wprint(pmodel, name="wprint"):
 
 def dis_print(sth, sstr="", toTprint=True):
     rank = torch.distributed.get_rank()
+    from megatron.core import parallel_state
     dprank = parallel_state.get_data_parallel_rank()
     print_str = f"rank{rank} dp{dprank} {sstr} "
     if toTprint:
