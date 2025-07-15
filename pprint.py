@@ -52,7 +52,7 @@ def tprint(obj, name=""):
             print(tmp_str1, flush=True)
             tmp_str2=obj.flatten()[:10].tolist()
             print(tmp_str2, flush=True)
-            return tmp_str1
+            return tmp_str1, tmp_str2
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
             print(f"'{name}' is a nn.Module. |Total parameters: {total_params}")
