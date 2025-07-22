@@ -9,6 +9,15 @@ import socket
 import os
 import debugpy# 防止多次调用 listen()
 
+def freeze_print(model):
+    if not ifdebug():
+        return
+    
+    print("="*200)
+    for name, param in model.named_parameters():
+        print(f"GRAD / 参数名: {param.requires_grad} / {name}")
+    print("="*200)
+
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
