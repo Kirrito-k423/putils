@@ -4,6 +4,15 @@ from contextlib import contextmanager
 from .pprint import tprint, ifdebug
 from .timer import mprint
 
+import os
+import psutil
+import time
+import threading
+import traceback
+import tracemalloc
+import sys
+from datetime import datetime
+
 def pmem_str():
     torch.npu.synchronize()
     mega_bytes = 1024.0 * 1024.0 * 1024.0
@@ -98,3 +107,70 @@ def pmsize(model):
             for param_name, param in module.named_parameters():
                 total_size += get_tensor_size(param)
             print(f"layer {name} {total_size} GB", flush=True)
+
+def get_main_thread_stack():
+    main_thread = threading.main_thread()
+    frames = sys._current_frames()
+    main_thread_id = main_thread.ident
+
+    if main_thread_id not in frames:
+        return "[Main thread stack not found]"
+
+    frame = frames[main_thread_id]
+    return ''.join(traceback.format_stack(frame))
+
+def start_host_mem_monitor(unique_str: str, print_interval: int = 5):
+    """
+    启动后台线程，周期性打印：
+    - 当前进程RSS
+    - 主线程堆栈
+    - Python内存分配快照（tracemalloc）
+    - 同时写入日志文件
+    """
+    pid = os.getpid()
+    log_file = f"{unique_str}_{pid}_hostmem.log"
+    process = psutil.Process(pid)
+
+    tracemalloc.start()
+
+    def monitor():
+        with open(log_file, "a") as f:
+            while True:
+                now = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+                rss = process.memory_info().rss / 1024 ** 2  # MB
+
+                # 主线程堆栈
+                # stack_str = get_main_thread_stack()
+
+                 # 主机内存使用情况
+                virtual_mem = psutil.virtual_memory()
+                total_mem = virtual_mem.total / 1024 ** 3  # GB
+                used_mem = virtual_mem.used / 1024 ** 3    # GB
+                available_mem = virtual_mem.available / 1024 ** 3  # GB
+                shared_mem = virtual_mem.shared / 1024 ** 3    # GB
+                mem_percent = virtual_mem.percent
+
+                # tracemalloc统计
+                snapshot = tracemalloc.take_snapshot()
+                top_stats = snapshot.statistics('lineno')
+
+                msg_lines = [
+                    f"{now} [PID {pid}] RSS: {rss:.2f} MB",
+                    f"Host Memory - Total: {total_mem:.2f} GB, Used: {used_mem:.2f} GB, Shared: {shared_mem:.2f} GB, Available: {available_mem:.2f} GB, Usage: {mem_percent:.1f}%",
+                    # f"--- Main Thread Stack ---",
+                    # stack_str.strip(),
+                    f"--- Top 10 memory usage (tracemalloc) ---",
+                ]
+                for stat in top_stats[:10]:
+                    msg_lines.append(str(stat))
+
+                msg_lines.append("-" * 80)
+                msg = "\n".join(msg_lines)
+
+                # print(msg)
+                f.write(msg + "\n")
+                f.flush()
+
+                time.sleep(print_interval)
+
+    threading.Thread(target=monitor, daemon=True).start()
