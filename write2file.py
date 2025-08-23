@@ -25,7 +25,7 @@ def log2file(content, prefix=""):
     filename_parts = [prefix, f"rank{rank_id}", f"tid{tid}"]
     if log_tag:
         filename_parts.append(log_tag)
-    filename = "_".join(filename_parts) + ".log"
+    filename = "/tmp/" + "_".join(filename_parts) + ".log"
 
     # 写入内容到文件（追加模式）
     with open(filename, "a", encoding="utf-8") as f:
