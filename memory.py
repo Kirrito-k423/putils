@@ -2,7 +2,8 @@ import torch
 import torch_npu
 from contextlib import contextmanager
 from .pprint import tprint, ifdebug
-from .timer import mprint
+from .timer import mprint, get_time_str
+from torch_npu.contrib import transfer_to_npu
 
 import os
 import psutil
@@ -17,13 +18,13 @@ def pmem_str():
     torch.npu.synchronize()
     mega_bytes = 1024.0 * 1024.0 * 1024.0
     string = ' | allocated: {}'.format(
-        torch.cuda.memory_allocated() / mega_bytes)
+        torch.npu.memory_allocated() / mega_bytes)
     string += ' | max allocated: {}'.format(
-        torch.cuda.max_memory_allocated() / mega_bytes)
+        torch.npu.max_memory_allocated() / mega_bytes)
     string += ' | reserved: {}'.format(
-        torch.cuda.memory_reserved() / mega_bytes)
+        torch.npu.memory_reserved() / mega_bytes)
     string += ' | max reserved: {}'.format(
-        torch.cuda.max_memory_reserved() / mega_bytes)
+        torch.npu.max_memory_reserved() / mega_bytes)
     return string
 
 
@@ -32,37 +33,68 @@ def report_memory(name):
     mega_bytes = 1024.0 * 1024.0
     string = name + ' memory (MB)'
     torch.npu.synchronize()
-    memory_allocated = torch.cuda.memory_allocated() / mega_bytes
+    memory_allocated = torch.npu.memory_allocated() / mega_bytes
     string += ' | allocated: {}'.format(
         memory_allocated)
     string += ' | max allocated: {}'.format(
-        torch.cuda.max_memory_allocated() / mega_bytes)
+        torch.npu.max_memory_allocated() / mega_bytes)
     string += ' | reserved: {}'.format(
-        torch.cuda.memory_reserved() / mega_bytes)
+        torch.npu.memory_reserved() / mega_bytes)
     string += ' | max reserved: {}'.format(
-        torch.cuda.max_memory_reserved() / mega_bytes)
+        torch.npu.max_memory_reserved() / mega_bytes)
     # if mpu.get_data_parallel_rank() == 0:
     rank = torch.distributed.get_rank()
     device = torch_npu.npu.current_device()
     record_time = mprint("[Rank {} Device {}] {}".format(rank, device, string))
-    if memory_allocated > 40000: # 40GB
-        # torch_npu.npu.memory._record_memory_history()
-        # xxx
-        torch_npu.npu.memory._dump_snapshot(f"oom_snapshot_rank_{rank}_device_{device}_{memory_allocated}_{record_time}.pickle")
+    # if memory_allocated > 40000: # 40GB
+    #     # torch_npu.npu.memory._record_memory_history()
+    #     # xxx
+    #     torch_npu.npu.memory._dump_snapshot(f"oom_snapshot_rank_{rank}_device_{device}_{memory_allocated}_{record_time}.pickle")
     torch.npu.synchronize()
-    
+
+_pmemory_used = False
+
 # Usage:
 # with pmemory("fun xxx"):
 #     funx()
 @contextmanager
 def pmemory(tmp_str):
+    global _pmemory_used
     tmp = f"TSJPMEM {tmp_str}"
     mem_str = pmem_str()
-    if ifdebug():
+    enable = not _pmemory_used
+    if False:
+        _pmemory_used = True
         with torch.profiler.record_function(tmp+mem_str):
+            rank = torch.distributed.get_rank()
+            device = torch_npu.npu.current_device()
+            torch_npu.npu.reset_peak_memory_stats()
+            torch_npu.npu.memory._record_memory_history()
             report_memory(f"before {tmp}")
-            yield
-            report_memory(f"after {tmp}")
+
+            try:
+                yield
+            except Exception as e:
+                # 异常时也 dump 一份
+                report_memory(f"exception in {tmp} {e}")
+                peak_allocated = torch.npu.memory.max_memory_allocated()
+                torch_npu.npu.memory._dump_snapshot(
+                    f"oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}_EXC.pickle"
+                )
+                raise  # 继续抛出异常，不要吞掉
+            else:
+                # 正常执行完
+                report_memory(f"after {tmp}")
+                peak_allocated = torch.npu.memory.max_memory_allocated()
+                torch_npu.npu.memory._dump_snapshot(
+                    f"oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}.pickle"
+                )
+            finally:
+                # 无论是否报错，都执行一次
+                peak_allocated = torch.npu.memory.max_memory_allocated()
+                torch_npu.npu.memory._dump_snapshot(
+                    f"oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}_FINAL.pickle"
+                )
     else:
         yield
 
