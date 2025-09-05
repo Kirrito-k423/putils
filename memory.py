@@ -3,6 +3,7 @@ import torch_npu
 from contextlib import contextmanager
 from .pprint import tprint, ifdebug
 from .timer import mprint, get_time_str
+from .device import get_torch_device
 from torch_npu.contrib import transfer_to_npu
 
 import os
@@ -13,6 +14,25 @@ import traceback
 import tracemalloc
 import sys
 from datetime import datetime
+
+
+# mem_allocated, mem_reserved, mem_used, mem_total = _get_current_mem_info()
+def _get_current_mem_info(unit: str = "GB", precision: int = 2) -> tuple[str]:
+    """Get current memory usage."""
+    assert unit in ["GB", "MB", "KB"]
+    divisor = 1024**3 if unit == "GB" else 1024**2 if unit == "MB" else 1024
+    mem_allocated = get_torch_device().memory_allocated()
+    mem_reserved = get_torch_device().memory_reserved()
+    # use get_torch_device().mem_get_info to profile device memory
+    # since vllm's sleep mode works below pytorch
+    # see https://github.com/vllm-project/vllm/pull/11743#issuecomment-2754338119
+    mem_free, mem_total = get_torch_device().mem_get_info()
+    mem_used = mem_total - mem_free
+    mem_allocated = f"{mem_allocated / divisor:.{precision}f}"
+    mem_reserved = f"{mem_reserved / divisor:.{precision}f}"
+    mem_used = f"{mem_used / divisor:.{precision}f}"
+    mem_total = f"{mem_total / divisor:.{precision}f}"
+    return mem_allocated, mem_reserved, mem_used, mem_total
 
 def pmem_str():
     torch.npu.synchronize()
@@ -33,6 +53,8 @@ def report_memory(name):
     mega_bytes = 1024.0 * 1024.0
     string = name + ' memory (MB)'
     torch.npu.synchronize()
+    mem_allocated, mem_reserved, mem_used, mem_total = _get_current_mem_info()
+    string += f' | {mem_used}/{mem_total}'
     memory_allocated = torch.npu.memory_allocated() / mega_bytes
     string += ' | allocated: {}'.format(
         memory_allocated)
@@ -42,6 +64,8 @@ def report_memory(name):
         torch.npu.memory_reserved() / mega_bytes)
     string += ' | max reserved: {}'.format(
         torch.npu.max_memory_reserved() / mega_bytes)
+    
+
     # if mpu.get_data_parallel_rank() == 0:
     rank = torch.distributed.get_rank()
     device = torch_npu.npu.current_device()
@@ -51,6 +75,8 @@ def report_memory(name):
     #     # xxx
     #     torch_npu.npu.memory._dump_snapshot(f"oom_snapshot_rank_{rank}_device_{device}_{memory_allocated}_{record_time}.pickle")
     torch.npu.synchronize()
+    torch.npu.reset_peak_memory_stats(device)
+
 
 _pmemory_used = False
 
@@ -63,12 +89,13 @@ def pmemory(tmp_str):
     tmp = f"TSJPMEM {tmp_str}"
     mem_str = pmem_str()
     enable = not _pmemory_used
-    if False:
+    if True:
         _pmemory_used = True
         with torch.profiler.record_function(tmp+mem_str):
             rank = torch.distributed.get_rank()
             device = torch_npu.npu.current_device()
             torch_npu.npu.reset_peak_memory_stats()
+            torch.npu.reset_accumulated_memory_stats()
             torch_npu.npu.memory._record_memory_history()
             report_memory(f"before {tmp}")
 
@@ -79,22 +106,28 @@ def pmemory(tmp_str):
                 report_memory(f"exception in {tmp} {e}")
                 peak_allocated = torch.npu.memory.max_memory_allocated()
                 torch_npu.npu.memory._dump_snapshot(
-                    f"oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}_EXC.pickle"
+                    f"{tmp_str}_oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}_EXC.pickle"
                 )
+                torch.npu.reset_peak_memory_stats()
+                torch.npu.reset_accumulated_memory_stats()
                 raise  # 继续抛出异常，不要吞掉
             else:
                 # 正常执行完
                 report_memory(f"after {tmp}")
                 peak_allocated = torch.npu.memory.max_memory_allocated()
                 torch_npu.npu.memory._dump_snapshot(
-                    f"oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}.pickle"
+                    f"{tmp_str}_oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}.pickle"
                 )
+                torch.npu.reset_peak_memory_stats()
+                torch.npu.reset_accumulated_memory_stats()
             finally:
                 # 无论是否报错，都执行一次
                 peak_allocated = torch.npu.memory.max_memory_allocated()
                 torch_npu.npu.memory._dump_snapshot(
-                    f"oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}_FINAL.pickle"
+                    f"{tmp_str}_oom_snapshot_rank_{rank}_device_{device}_{get_time_str()}_pick{peak_allocated}_FINAL.pickle"
                 )
+                torch.npu.reset_peak_memory_stats()
+                torch.npu.reset_accumulated_memory_stats()
     else:
         yield
 
