@@ -33,7 +33,15 @@ class TraceManager:
         self.verbose = verbose
 
         # 初始化 viztracer
-        self.tracer = VizTracer(tracer_entries=tracer_entries, verbose=0)
+        self.tracer = VizTracer(
+            output_file="trace.json",
+            verbose=1,                 # 0=静默，1=显示保存信息
+            max_stack_depth=10,        # 限制调用栈深度
+            ignore_frozen=True,        # 忽略标准库等冻结代码（减少噪音）
+            log_async=True,            # 如果用 asyncio
+            log_gc=False,              # 一般不用记录 GC
+            tracer_entries=tracer_entries     # 缓冲区大小，默认 1M 条事件
+        )
         self._stop_event = threading.Event()
         self._save_lock = threading.Lock()
         self._auto_counter = 0
