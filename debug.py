@@ -21,7 +21,10 @@ def freeze_print(model):
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
-        
+
+# 使用
+# from putils.debug import vscode_gdb
+# vscode_gdb()
 def vscode_gdb(start_port=23325, end_port=24000,lock_file="/tmp/debugpy.lock"):
     if not ifdebug():
         return
