@@ -29,7 +29,10 @@ def profiling_this(encoder_count):
             experimental_config = torch_npu.profiler._ExperimentalConfig(
                 aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
                 profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-                data_simplification=False
+                data_simplification=False,
+                export_type=[
+                    torch_npu.profiler.ExportType.Db
+                ],
             )
             with torch_npu.profiler.profile(
                 activities=[
@@ -38,7 +41,7 @@ def profiling_this(encoder_count):
                 with_stack=True,
                 record_shapes=True,
                 profile_memory=True,
-                with_modules=True, # CPU侧python调用
+                with_modules=False, # CPU侧python调用
                 schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=1, repeat=1, skip_first=0),
                 on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profiling_path),
                 experimental_config=experimental_config
