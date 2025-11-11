@@ -38,7 +38,7 @@ def profiling_this(encoder_count):
                 activities=[
                     torch_npu.profiler.ProfilerActivity.CPU,  # CPU侧python调用
                     torch_npu.profiler.ProfilerActivity.NPU],
-                with_stack=True,
+                with_stack=False, # CPU侧python调用
                 record_shapes=True,
                 profile_memory=True,
                 with_modules=False, # CPU侧python调用
