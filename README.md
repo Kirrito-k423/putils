@@ -30,3 +30,5 @@ if "DEBUG_NPU_WORKER" in os.environ:
         time.sleep(0.5) 
         # 您可以在附加调试器后，在 Watch 窗口手动设置一个标志变量来跳出循环
 ```
+
+没用，vscode attach不上，直接gdb是c++堆栈，需要source python-gdb.py
