@@ -54,4 +54,4 @@ def hook_for_model(model):
             if name not in exclude:
                 print(name)
                 module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
-                module.register_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
+                module.register_full_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
