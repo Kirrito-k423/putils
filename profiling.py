@@ -4,6 +4,57 @@ import torch
 import torch_npu
 from contextlib import contextmanager
 
+# 函数装饰器，用于mstx采集关心时间范围
+def npu_profiler(range_name="update_actor start"):
+    """
+    NPU性能分析装饰器, 只采集关系函数
+    
+    Args:
+        range_name (str): 性能分析范围的标记名称
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # 创建实验配置
+            experimental_config = torch_npu.profiler._ExperimentalConfig(
+                export_type=[
+                    torch_npu.profiler.ExportType.Text,
+                    torch_npu.profiler.ExportType.Db
+                ],
+                profiler_level=torch_npu.profiler.ProfilerLevel.Level_none, # 不需要其余信息
+                aic_metrics=torch_npu.profiler.AiCMetrics.AiCoreNone,
+                l2_cache=False,
+                op_attr=False,
+                data_simplification=False,
+                record_op_args=False,
+                gc_detect_threshold=None,
+                msprof_tx=True, # mstx开关
+                mstx_domain_exclude=["communication"],
+            )
+            
+            # 开始性能分析
+            with torch_npu.profiler.profile(
+                activities=[torch_npu.profiler.ProfilerActivity.NPU],
+                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./mstx_result"),
+                experimental_config=experimental_config):
+                
+                # 标记初始化点
+                torch_npu.npu.mstx.mark(f"{range_name.split(' ')[0]} init")
+                
+                # 开始范围标记
+                p_id1 = torch_npu.npu.mstx.range_start(range_name)
+                
+                try:
+                    # 执行被装饰的函数
+                    result = func(*args, **kwargs)
+                    return result
+                finally:
+                    # 结束范围标记
+                    torch_npu.npu.mstx.range_end(p_id1)
+        
+        return wrapper
+    return decorator
+
 # Usage:
 # export MM_ENABLE_PROFILING=1
 # with profiling_this(True):
