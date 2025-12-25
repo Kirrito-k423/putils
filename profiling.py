@@ -5,6 +5,8 @@ import torch_npu
 from contextlib import contextmanager
 
 # 函数装饰器，用于mstx采集关心时间范围
+# tip1：如果嵌套函数两个函数都使用，只有内层会显示
+# tip2: 内部的不需要prof, 直接使用mark, range_start api就行
 def npu_profiler(range_name="update_actor start"):
     """
     NPU性能分析装饰器, 只采集关系函数
