@@ -48,6 +48,12 @@ def pmem_str():
     return string
 
 
+# get_torch_device().mem_get_info()（NPU 上对应 torch.npu.mem_get_info()）拿到的是设备/驱动层面看到的“当前设备还剩多少可用显存/总显存”。
+# mem_used = total - free 表示设备上目前被占用的总量（往往是“全局/上下文视角”），会包含很多 PyTorch 追踪不到的部分。
+# torch.npu.memory_allocated() 是 PyTorch 分配器统计的「本进程中仍被 Tensor 持有的显存」（active allocations）。它只统计 PyTorch 认为“正在被张量占用”的那部分。
+# 因此一般会出现这种关系（同一时刻、同一单位下大概率满足）：
+# memory_allocated <= memory_reserved <= mem_used <= mem_total
+
 def report_memory(name):
     """Simple GPU memory report."""
     mega_bytes = 1024.0 * 1024.0
