@@ -1,4 +1,5 @@
 import time
+import torch.distributed as dist
 from contextlib import contextmanager
 from .write2file import log2file
 
@@ -8,21 +9,25 @@ TIMER_VERBOSE = True
 # with timer("sleep 1s"):
 #     time.sleep(1)
 @contextmanager
-def timer(name=""):
+def timer(name="", print_rank0_only=True):
     if TIMER_VERBOSE:
         start = time.perf_counter()
-        print(f"[Timer] '{name}' started...")
-        prefix_str = f"{name} func started"
-        log2file(f"{name} {mprint(prefix_str)}")
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        if not print_rank0_only or rank == 0:
+            print(f"[Timer] '{name}' started...")
+            prefix_str = f"{name} func started"
+            log2file(f"{name} {mprint(prefix_str)}")
     try:
         yield
     finally:
         if TIMER_VERBOSE:
             end = time.perf_counter()
             duration = end - start
-            print(f"[Timer] '{name}' finished in {duration:.6f} seconds.")
-            prefix_str = f"{name} func end"
-            log2file(f"{name} {mprint(prefix_str)} during {duration}")
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            if not print_rank0_only or rank == 0:
+                print(f"[Timer] '{name}' finished in {duration:.6f} seconds.")
+                prefix_str = f"{name} func end"
+                log2file(f"{name} {mprint(prefix_str)} during {duration}")
 
 
 
@@ -30,10 +35,10 @@ def timer(name=""):
 # @timer_decorator("custom name")
 # def my_func():
 #     time.sleep(0.5)
-def timer_decorator(name=None):
+def timer_decorator(name=None, print_rank0_only=True):
     def decorator(func):
         def wrapper(*args, **kwargs):
-            with timer(name or func.__name__):
+            with timer(name or func.__name__, print_rank0_only=print_rank0_only):
                 return func(*args, **kwargs)
         return wrapper
     return decorator
