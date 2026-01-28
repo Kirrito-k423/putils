@@ -54,7 +54,7 @@ def pmem_str():
 # 因此一般会出现这种关系（同一时刻、同一单位下大概率满足）：
 # memory_allocated <= memory_reserved <= mem_used <= mem_total
 
-def report_memory(name):
+def report_memory(name, print_rank0_only=True):
     """Simple GPU memory report."""
     mega_bytes = 1024.0 * 1024.0
     string = name + ' memory (MB)'
@@ -72,10 +72,10 @@ def report_memory(name):
         torch.npu.max_memory_reserved() / mega_bytes)
     
 
-    # if mpu.get_data_parallel_rank() == 0:
     rank = torch.distributed.get_rank()
     device = torch_npu.npu.current_device()
-    record_time = mprint("[Rank {} Device {}] {}".format(rank, device, string))
+    if not print_rank0_only or rank == 0:
+        record_time = mprint("[Rank {} Device {}] {}".format(rank, device, string))
     # if memory_allocated > 40000: # 40GB
     #     # torch_npu.npu.memory._record_memory_history()
     #     # xxx
