@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Python Stack Sniffer Tool
 
@@ -7,12 +8,19 @@ and converts them to Chrome Tracing JSON format for visualization.
 
 Usage:
     python python_stack_sniffer.py -p <pid> -i <interval> -o <output.json>
-    
-# 不传 pid：自动从 npu-smi info 抓取所有进程 pid
-python /opt/tiger/bi_mindspeed_mm/python_stack_sniffer.py -i 0.2 -d 10 -o trace.json
 
-# 仍然支持手工 pid list
-python /opt/tiger/bi_mindspeed_mm/python_stack_sniffer.py -p 44002,44003 -i 0.2 -d 10 -o trace.json
+中文使用说明：
+    
+
+使用场景示例：
+    # 不传pid：自动从npu-smi info抓取所有进程pid
+    python python_stack_sniffer.py -i 0.2 -d 10 -o trace.json
+    
+    # 仍然支持手工pid list
+    python python_stack_sniffer.py -p 44002,44003 -i 0.2 -d 10 -o trace.json
+
+    # 自动间隔保存
+    python python_stack_sniffer.py -p 1667631  -i 0.1 -o stack_trace.json --autosave-interval 10
 """
 
 import argparse
@@ -21,11 +29,31 @@ import json
 import time
 import logging
 import re
+import os
+import tempfile
 from typing import List, Dict, Any, Optional, Tuple
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
+    dir_name = os.path.dirname(os.path.abspath(file_path)) or "."
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=dir_name, delete=False) as tf:
+            tmp_path = tf.name
+            json.dump(data, tf, indent=indent)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_path, file_path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('-i', '--interval', type=float, default=0.1, help='Sampling interval in seconds')
     parser.add_argument('-o', '--output', type=str, default='stack_trace.json', help='Output JSON file path')
     parser.add_argument('-d', '--duration', type=float, help='Duration to run in seconds (optional)')
+    parser.add_argument('--autosave-interval', type=float, default=0.0, help='Auto-save interval in seconds (0 to disable)')
+    parser.add_argument('--autosave-output', type=str, default=None, help='Auto-save JSON file path (default: same as --output)')
     parser.add_argument('--all-threads', action='store_true', help='Capture all threads (default: only MainThread)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
     return parser.parse_args()
@@ -257,18 +287,19 @@ def convert_to_chrome_tracing(
     pid: int,
     stack_data: Dict[str, Any],
     ts_us: int,
-    interval_us: int,
     seen_thread_ids: set,
+    open_stacks: Dict[int, List[str]],
 ) -> List[Dict[str, Any]]:
-    """Convert parsed stack traces to Chrome Tracing events."""
     events: List[Dict[str, Any]] = []
 
-    interval_us = max(1, int(interval_us))
+    current_tids = set()
 
     for thread in stack_data.get("threads", []):
         thread_id = int(thread.get("id", 0) or 0)
         thread_name = thread.get("name") or f"Thread {thread_id}"
         stack = thread.get("stack") or []
+
+        current_tids.add(thread_id)
 
         if thread_id not in seen_thread_ids:
             events.append(
@@ -283,23 +314,7 @@ def convert_to_chrome_tracing(
             )
             seen_thread_ids.add(thread_id)
 
-        if not stack:
-            continue
-
         frames = list(reversed(stack))
-        n = len(frames)
-        if n == 0:
-            continue
-
-        step = max(1, interval_us // max(1, n))
-        taper_step = max(1, interval_us // 200)
-        max_step = max(1, (interval_us - 1) // max(1, n - 1))
-        taper_step = min(taper_step, max_step)
-
-        end_offsets = [max(1, interval_us - i * taper_step) for i in range(n)]
-        for i in range(1, n):
-            if end_offsets[i] >= end_offsets[i - 1]:
-                end_offsets[i] = max(1, end_offsets[i - 1] - 1)
 
         names: List[str] = []
         for frame in frames:
@@ -308,10 +323,28 @@ def convert_to_chrome_tracing(
             line_num = frame.get("lineno", 0)
             names.append(f"{fn} ({file_name}:{line_num})")
 
-        for frame_name, frame in zip(names, frames):
+        prev_names = open_stacks.get(thread_id, [])
+        common = 0
+        max_common = min(len(prev_names), len(names))
+        while common < max_common and prev_names[common] == names[common]:
+            common += 1
+
+        for i in range(len(prev_names) - 1, common - 1, -1):
             events.append(
                 {
-                    "name": frame_name,
+                    "name": prev_names[i],
+                    "ph": "E",
+                    "ts": ts_us,
+                    "tid": thread_id,
+                    "pid": pid,
+                }
+            )
+
+        for i in range(common, len(names)):
+            frame = frames[i]
+            events.append(
+                {
+                    "name": names[i],
                     "ph": "B",
                     "ts": ts_us,
                     "tid": thread_id,
@@ -325,17 +358,41 @@ def convert_to_chrome_tracing(
                 }
             )
 
-        for i in range(n - 1, -1, -1):
+        open_stacks[thread_id] = names
+
+    for thread_id in list(open_stacks.keys()):
+        if thread_id in current_tids:
+            continue
+        prev_names = open_stacks.get(thread_id, [])
+        for i in range(len(prev_names) - 1, -1, -1):
             events.append(
                 {
-                    "name": names[i],
+                    "name": prev_names[i],
                     "ph": "E",
-                    "ts": ts_us + end_offsets[i],
+                    "ts": ts_us,
                     "tid": thread_id,
                     "pid": pid,
                 }
             )
+        open_stacks.pop(thread_id, None)
 
+    return events
+
+
+def close_open_stacks(pid: int, ts_us: int, open_stacks: Dict[int, List[str]]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for thread_id, names in list(open_stacks.items()):
+        for i in range(len(names) - 1, -1, -1):
+            events.append(
+                {
+                    "name": names[i],
+                    "ph": "E",
+                    "ts": ts_us,
+                    "tid": thread_id,
+                    "pid": pid,
+                }
+            )
+    open_stacks.clear()
     return events
 
 
@@ -359,6 +416,11 @@ def main():
     logger.info(f"Output file: {args.output}")
     logger.info(f"Threads: {'MainThread only' if main_thread_only else 'all'}")
 
+    autosave_interval_s = float(args.autosave_interval or 0.0)
+    autosave_output = args.autosave_output or args.output
+    if autosave_interval_s > 0:
+        logger.info(f"Auto-save: every {autosave_interval_s} seconds -> {autosave_output}")
+
     chrome_tracing_data = {
         "traceEvents": [],
         "displayTimeUnit": "us",
@@ -373,9 +435,8 @@ def main():
     for pid in pids:
         states[pid] = {
             "seen_thread_ids": set(),
+            "open_stacks": {},
             "last_ts_us": None,
-            "last_stack_data": None,
-            "last_interval_us": max(1, int(args.interval * 1000000)),
         }
 
         chrome_tracing_data["traceEvents"].append(
@@ -388,6 +449,8 @@ def main():
             }
         )
     
+    last_autosave_time = time.monotonic()
+
     try:
         while True:
             now = time.monotonic()
@@ -402,21 +465,21 @@ def main():
                 stack_data = _filter_stack_data(stack_data, main_thread_only)
 
                 st = states[pid]
-                if st["last_ts_us"] is not None and st["last_stack_data"] is not None:
-                    interval_us = max(1, ts_us - st["last_ts_us"])
-                    st["last_interval_us"] = interval_us
-                    events = convert_to_chrome_tracing(
-                        pid,
-                        st["last_stack_data"],
-                        st["last_ts_us"],
-                        interval_us,
-                        st["seen_thread_ids"],
-                    )
-                    chrome_tracing_data["traceEvents"].extend(events)
-                    sample_count += 1
+                events = convert_to_chrome_tracing(
+                    pid,
+                    stack_data,
+                    ts_us,
+                    st["seen_thread_ids"],
+                    st["open_stacks"],
+                )
+                chrome_tracing_data["traceEvents"].extend(events)
+                sample_count += 1
 
                 st["last_ts_us"] = ts_us
-                st["last_stack_data"] = stack_data
+
+            if autosave_interval_s > 0 and (now - last_autosave_time) >= autosave_interval_s:
+                _atomic_write_json(autosave_output, chrome_tracing_data, indent=2)
+                last_autosave_time = now
 
             next_tick += args.interval
             sleep_s = next_tick - time.monotonic()
@@ -429,24 +492,15 @@ def main():
         logger.error(f"Unexpected error: {e}")
         raise
     finally:
+        end_ts_us = int((time.monotonic() - start_time) * 1000000)
         for pid in pids:
             st = states.get(pid)
             if not st:
                 continue
-            if st["last_ts_us"] is not None and st["last_stack_data"] is not None:
-                events = convert_to_chrome_tracing(
-                    pid,
-                    st["last_stack_data"],
-                    st["last_ts_us"],
-                    st["last_interval_us"],
-                    st["seen_thread_ids"],
-                )
-                chrome_tracing_data["traceEvents"].extend(events)
-                sample_count += 1
+            events = close_open_stacks(pid, end_ts_us, st["open_stacks"])
+            chrome_tracing_data["traceEvents"].extend(events)
 
-        # Write the Chrome Tracing JSON file
-        with open(args.output, 'w') as f:
-            json.dump(chrome_tracing_data, f, indent=2)
+        _atomic_write_json(args.output, chrome_tracing_data, indent=2)
         
         logger.info(f"Capture completed")
         logger.info(f"Total samples: {sample_count}")
