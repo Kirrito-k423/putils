@@ -7,7 +7,12 @@ and converts them to Chrome Tracing JSON format for visualization.
 
 Usage:
     python python_stack_sniffer.py -p <pid> -i <interval> -o <output.json>
-    python python_stack_sniffer.py -p 1549992  -i 0.2 -d 10 -o trace.json
+    
+# 不传 pid：自动从 npu-smi info 抓取所有进程 pid
+python /opt/tiger/bi_mindspeed_mm/python_stack_sniffer.py -i 0.2 -d 10 -o trace.json
+
+# 仍然支持手工 pid list
+python /opt/tiger/bi_mindspeed_mm/python_stack_sniffer.py -p 44002,44003 -i 0.2 -d 10 -o trace.json
 """
 
 import argparse
@@ -26,12 +31,104 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Python Stack Sniffer for Chrome Tracing')
-    parser.add_argument('-p', '--pid', type=int, required=True, help='Process ID to monitor')
+    parser.add_argument(
+        '-p',
+        '--pid',
+        dest='pids',
+        action='append',
+        required=False,
+        help='Process ID list. Repeatable (-p 1 -p 2) or comma-separated (-p 1,2). If omitted, uses `npu-smi info` to discover PIDs.',
+    )
     parser.add_argument('-i', '--interval', type=float, default=0.1, help='Sampling interval in seconds')
     parser.add_argument('-o', '--output', type=str, default='stack_trace.json', help='Output JSON file path')
     parser.add_argument('-d', '--duration', type=float, help='Duration to run in seconds (optional)')
+    parser.add_argument('--all-threads', action='store_true', help='Capture all threads (default: only MainThread)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
     return parser.parse_args()
+
+
+def _normalize_pids(pid_args: List[str]) -> List[int]:
+    pids: List[int] = []
+    seen = set()
+
+    for item in pid_args:
+        for part in item.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            pid = int(part)
+            if pid not in seen:
+                pids.append(pid)
+                seen.add(pid)
+
+    if not pids:
+        raise ValueError('empty pid list')
+
+    return pids
+
+
+def _filter_stack_data(stack_data: Dict[str, Any], main_thread_only: bool) -> Dict[str, Any]:
+    if not main_thread_only:
+        return stack_data
+
+    threads = stack_data.get('threads') or []
+    main_threads = [t for t in threads if (t.get('name') or '') == 'MainThread']
+    if main_threads:
+        return {"threads": main_threads}
+
+    return stack_data
+
+
+def _get_pids_from_npu_smi_info() -> List[int]:
+    try:
+        result = subprocess.run(
+            ['npu-smi', 'info'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.error('npu-smi not found; please provide -p/--pid explicitly')
+        return []
+    except subprocess.CalledProcessError as e:
+        logger.error(f"npu-smi info failed: {(e.stderr or '').strip()}")
+        return []
+
+    pids: List[int] = []
+    seen = set()
+    in_process_table = False
+
+    for raw_line in (result.stdout or '').splitlines():
+        line = raw_line.rstrip('\n')
+        header = line.lower()
+        if re.search(r'process\s*id', header) and re.search(r'process\s*name', header):
+            in_process_table = True
+            continue
+        if not in_process_table:
+            continue
+        if line.startswith('+'):
+            continue
+        if not line.strip().startswith('|'):
+            continue
+
+        parts = [p.strip() for p in line.strip().strip('|').split('|')]
+        if len(parts) < 3:
+            continue
+
+        pid_str: Optional[str] = None
+        for token in parts[1:]:
+            if token.isdigit():
+                pid_str = token
+                break
+        if pid_str is None:
+            continue
+
+        pid = int(pid_str)
+        if pid not in seen:
+            pids.append(pid)
+            seen.add(pid)
+
+    return pids
 
 
 def _run_pyspy_dump(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -244,14 +341,24 @@ def convert_to_chrome_tracing(
 
 def main():
     args = parse_args()
-    
+
     if args.verbose:
         logger.setLevel(logging.DEBUG)
-    
-    logger.info(f"Starting Python Stack Sniffer for PID {args.pid}")
+
+    if args.pids:
+        pids = _normalize_pids(args.pids)
+    else:
+        pids = _get_pids_from_npu_smi_info()
+        if not pids:
+            raise RuntimeError('No PIDs found from `npu-smi info` and no -p/--pid provided')
+
+    main_thread_only = not args.all_threads
+
+    logger.info(f"Starting Python Stack Sniffer for PIDs: {','.join(map(str, pids))}")
     logger.info(f"Sampling interval: {args.interval} seconds")
     logger.info(f"Output file: {args.output}")
-    
+    logger.info(f"Threads: {'MainThread only' if main_thread_only else 'all'}")
+
     chrome_tracing_data = {
         "traceEvents": [],
         "displayTimeUnit": "us",
@@ -261,21 +368,25 @@ def main():
     next_tick = start_time
 
     sample_count = 0
-    seen_thread_ids: set = set()
 
-    last_ts_us: Optional[int] = None
-    last_stack_data: Optional[Dict[str, Any]] = None
-    last_interval_us = max(1, int(args.interval * 1000000))
-
-    chrome_tracing_data["traceEvents"].append(
-        {
-            "name": "process_name",
-            "ph": "M",
-            "ts": 0,
-            "pid": args.pid,
-            "args": {"name": f"python pid {args.pid}"},
+    states: Dict[int, Dict[str, Any]] = {}
+    for pid in pids:
+        states[pid] = {
+            "seen_thread_ids": set(),
+            "last_ts_us": None,
+            "last_stack_data": None,
+            "last_interval_us": max(1, int(args.interval * 1000000)),
         }
-    )
+
+        chrome_tracing_data["traceEvents"].append(
+            {
+                "name": "process_name",
+                "ph": "M",
+                "ts": 0,
+                "pid": pid,
+                "args": {"name": f"python pid {pid}"},
+            }
+        )
     
     try:
         while True:
@@ -283,20 +394,29 @@ def main():
             if args.duration and (now - start_time) >= args.duration:
                 break
 
-            ts_us = int((now - start_time) * 1000000)
+            for pid in pids:
+                ts_us = int((time.monotonic() - start_time) * 1000000)
 
-            pyspy_output = get_stack_traces(args.pid)
-            stack_data = parse_pyspy_output(pyspy_output) if pyspy_output else {"threads": []}
+                pyspy_output = get_stack_traces(pid)
+                stack_data = parse_pyspy_output(pyspy_output) if pyspy_output else {"threads": []}
+                stack_data = _filter_stack_data(stack_data, main_thread_only)
 
-            if last_ts_us is not None and last_stack_data is not None:
-                interval_us = max(1, ts_us - last_ts_us)
-                last_interval_us = interval_us
-                events = convert_to_chrome_tracing(args.pid, last_stack_data, last_ts_us, interval_us, seen_thread_ids)
-                chrome_tracing_data["traceEvents"].extend(events)
-                sample_count += 1
+                st = states[pid]
+                if st["last_ts_us"] is not None and st["last_stack_data"] is not None:
+                    interval_us = max(1, ts_us - st["last_ts_us"])
+                    st["last_interval_us"] = interval_us
+                    events = convert_to_chrome_tracing(
+                        pid,
+                        st["last_stack_data"],
+                        st["last_ts_us"],
+                        interval_us,
+                        st["seen_thread_ids"],
+                    )
+                    chrome_tracing_data["traceEvents"].extend(events)
+                    sample_count += 1
 
-            last_ts_us = ts_us
-            last_stack_data = stack_data
+                st["last_ts_us"] = ts_us
+                st["last_stack_data"] = stack_data
 
             next_tick += args.interval
             sleep_s = next_tick - time.monotonic()
@@ -309,10 +429,20 @@ def main():
         logger.error(f"Unexpected error: {e}")
         raise
     finally:
-        if last_ts_us is not None and last_stack_data is not None:
-            events = convert_to_chrome_tracing(args.pid, last_stack_data, last_ts_us, last_interval_us, seen_thread_ids)
-            chrome_tracing_data["traceEvents"].extend(events)
-            sample_count += 1
+        for pid in pids:
+            st = states.get(pid)
+            if not st:
+                continue
+            if st["last_ts_us"] is not None and st["last_stack_data"] is not None:
+                events = convert_to_chrome_tracing(
+                    pid,
+                    st["last_stack_data"],
+                    st["last_ts_us"],
+                    st["last_interval_us"],
+                    st["seen_thread_ids"],
+                )
+                chrome_tracing_data["traceEvents"].extend(events)
+                sample_count += 1
 
         # Write the Chrome Tracing JSON file
         with open(args.output, 'w') as f:
