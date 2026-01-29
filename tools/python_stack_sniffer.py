@@ -33,6 +33,10 @@ Usage:
       --npu-aicore-usage \
       --npu-smi-refresh-interval 1 \
       --npu-smi-timeout 2.5
+
+    # 开启CPU监控
+    --cpu-mem-usage：开启 CPU 内存监控
+    --cpu-mem-timeout：每次采样 free 的超时（默认 1s）
 """
 
 import argparse
@@ -109,6 +113,17 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2.0,
         help='Timeout in seconds for each npu-smi sampling attempt',
+    )
+    parser.add_argument(
+        '--cpu-mem-usage',
+        action='store_true',
+        help='Sample `free -b` memory metrics and record into output JSON',
+    )
+    parser.add_argument(
+        '--cpu-mem-timeout',
+        type=float,
+        default=1.0,
+        help='Timeout in seconds for each free sampling attempt',
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
     return parser.parse_args()
@@ -256,6 +271,48 @@ def _sample_npu_usage_rates(refresh_interval_s: int, timeout_s: float) -> Option
                     proc.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
                     pass
+
+
+def _sample_cpu_mem_stats(timeout_s: float) -> Optional[Dict[str, int]]:
+    timeout = max(float(timeout_s or 0.0), 0.1)
+    result = subprocess.run(
+        ['free', '-b'],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=timeout,
+    )
+
+    for raw_line in (result.stdout or '').splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not (line.startswith('Mem:') or line.lower().startswith('mem:')):
+            continue
+
+        parts = line.split()
+        if len(parts) < 7:
+            return None
+
+        total = int(parts[1])
+        used = int(parts[2])
+        free = int(parts[3])
+        shared = int(parts[4])
+        buff_cache = int(parts[5])
+        available = int(parts[6])
+
+        usage_rate = int(round((used * 100.0) / total)) if total > 0 else 0
+        return {
+            'total_bytes': total,
+            'used_bytes': used,
+            'free_bytes': free,
+            'shared_bytes': shared,
+            'buff_cache_bytes': buff_cache,
+            'available_bytes': available,
+            'usage_rate': usage_rate,
+        }
+
+    return None
 
 
 def _run_pyspy_dump(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -537,6 +594,20 @@ def main():
             }
         )
 
+    collect_cpu_mem_usage = bool(args.cpu_mem_usage)
+    cpu_mem_disabled = False
+    cpu_trace_pid = -1
+    if collect_cpu_mem_usage:
+        chrome_tracing_data["traceEvents"].append(
+            {
+                "name": "process_name",
+                "ph": "M",
+                "ts": 0,
+                "pid": cpu_trace_pid,
+                "args": {"name": "cpu"},
+            }
+        )
+
     start_time = time.monotonic()
     next_tick = start_time
 
@@ -608,6 +679,38 @@ def main():
                     )
                     chrome_tracing_data.setdefault("npu", {}).setdefault("hbm_usage_rate", []).append(
                         {"ts_us": ts_us, "value": hbm}
+                    )
+
+            if collect_cpu_mem_usage and not cpu_mem_disabled:
+                try:
+                    mem = _sample_cpu_mem_stats(args.cpu_mem_timeout)
+                except FileNotFoundError:
+                    logger.error('free not found; disable --cpu-mem-usage')
+                    cpu_mem_disabled = True
+                    mem = None
+                except subprocess.TimeoutExpired:
+                    mem = None
+                except subprocess.CalledProcessError:
+                    mem = None
+
+                if mem:
+                    chrome_tracing_data["traceEvents"].append(
+                        {
+                            "name": "cpu_mem",
+                            "ph": "C",
+                            "ts": ts_us,
+                            "pid": cpu_trace_pid,
+                            "tid": 0,
+                            "args": {
+                                "total_bytes": int(mem["total_bytes"]),
+                                "used_bytes": int(mem["used_bytes"]),
+                                "available_bytes": int(mem["available_bytes"]),
+                                "usage_rate": int(mem["usage_rate"]),
+                            },
+                        }
+                    )
+                    chrome_tracing_data.setdefault("cpu", {}).setdefault("mem", []).append(
+                        {"ts_us": ts_us, **mem}
                     )
 
             for pid in pids:
