@@ -22,10 +22,10 @@ Usage:
     # 自动间隔保存
     python python_stack_sniffer.py -p 1667631  -i 0.1 -o stack_trace.json --autosave-interval 10
 
-    # 开启 NPU 监控（默认 refresh interval=1 秒，timeout=2 秒）：
+    # 开启 NPU 监控（显存 + 利用率）（默认 refresh interval=1 秒，timeout=2 秒）：
     python python_stack_sniffer.py \
       -p 12345 -i 0.2 -d 10 -o trace.json \
-      --npu-aicore-usage
+      --npu-usage
 
     # 自定义 npu-smi 刷新与超时：
     python python_stack_sniffer.py \
@@ -87,9 +87,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--autosave-output', type=str, default=None, help='Auto-save JSON file path (default: same as --output)')
     parser.add_argument('--all-threads', action='store_true', help='Capture all threads (default: only MainThread)')
     parser.add_argument(
-        '--npu-aicore-usage',
+        '--npu-usage',
+        dest='npu_usage',
         action='store_true',
-        help='Sample `npu-smi info -t usages` Aicore Usage Rate(%) and record into output JSON',
+        help='Sample `npu-smi info -t usages` metrics (Aicore Usage Rate(%) / HBM Usage Rate(%)) and record into output JSON',
+    )
+    parser.add_argument(
+        '--npu-aicore-usage',
+        dest='npu_usage',
+        action='store_true',
+        help='Alias of --npu-usage',
     )
     parser.add_argument(
         '--npu-smi-refresh-interval',
@@ -191,7 +198,7 @@ def _get_pids_from_npu_smi_info() -> List[int]:
     return pids
 
 
-def _sample_npu_aicore_usage_rate(refresh_interval_s: int, timeout_s: float) -> Optional[int]:
+def _sample_npu_usage_rates(refresh_interval_s: int, timeout_s: float) -> Optional[Dict[str, int]]:
     cmd = ['npu-smi', 'info', '-t', 'usages', '-i', str(int(refresh_interval_s))]
 
     proc = subprocess.Popen(
@@ -203,6 +210,7 @@ def _sample_npu_aicore_usage_rate(refresh_interval_s: int, timeout_s: float) -> 
     )
 
     deadline = time.monotonic() + max(float(timeout_s or 0.0), 0.1)
+    found: Dict[str, int] = {}
     try:
         stdout = proc.stdout
         if stdout is None:
@@ -219,16 +227,24 @@ def _sample_npu_aicore_usage_rate(refresh_interval_s: int, timeout_s: float) -> 
                 break
 
             lower = line.lower()
-            if 'aicore usage rate' not in lower:
+            key: Optional[str] = None
+            if 'aicore usage rate' in lower:
+                key = 'aicore'
+            elif 'hbm usage rate' in lower:
+                key = 'hbm'
+
+            if key is None or key in found:
                 continue
 
             m = re.search(r':\s*(\d+)\b', line)
             if not m:
                 continue
 
-            return int(m.group(1))
+            found[key] = int(m.group(1))
+            if 'aicore' in found and 'hbm' in found:
+                break
 
-        return None
+        return found or None
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -507,10 +523,10 @@ def main():
         "displayTimeUnit": "us",
     }
 
-    collect_npu_aicore_usage = bool(args.npu_aicore_usage)
+    collect_npu_usage = bool(args.npu_usage)
     npu_smi_disabled = False
     npu_trace_pid = 0
-    if collect_npu_aicore_usage:
+    if collect_npu_usage:
         chrome_tracing_data["traceEvents"].append(
             {
                 "name": "process_name",
@@ -554,15 +570,16 @@ def main():
 
             ts_us = int((time.monotonic() - start_time) * 1000000)
 
-            if collect_npu_aicore_usage and not npu_smi_disabled:
+            if collect_npu_usage and not npu_smi_disabled:
                 try:
-                    usage = _sample_npu_aicore_usage_rate(args.npu_smi_refresh_interval, args.npu_smi_timeout)
+                    rates = _sample_npu_usage_rates(args.npu_smi_refresh_interval, args.npu_smi_timeout)
                 except FileNotFoundError:
-                    logger.error('npu-smi not found; disable --npu-aicore-usage')
+                    logger.error('npu-smi not found; disable --npu-usage')
                     npu_smi_disabled = True
-                    usage = None
+                    rates = None
 
-                if usage is not None:
+                if rates and ("aicore" in rates):
+                    aicore = int(rates["aicore"])
                     chrome_tracing_data["traceEvents"].append(
                         {
                             "name": "npu_aicore_usage_rate",
@@ -570,11 +587,27 @@ def main():
                             "ts": ts_us,
                             "pid": npu_trace_pid,
                             "tid": 0,
-                            "args": {"aicore": usage},
+                            "args": {"aicore": aicore},
                         }
                     )
                     chrome_tracing_data.setdefault("npu", {}).setdefault("aicore_usage_rate", []).append(
-                        {"ts_us": ts_us, "value": usage}
+                        {"ts_us": ts_us, "value": aicore}
+                    )
+
+                if rates and ("hbm" in rates):
+                    hbm = int(rates["hbm"])
+                    chrome_tracing_data["traceEvents"].append(
+                        {
+                            "name": "npu_hbm_usage_rate",
+                            "ph": "C",
+                            "ts": ts_us,
+                            "pid": npu_trace_pid,
+                            "tid": 0,
+                            "args": {"hbm": hbm},
+                        }
+                    )
+                    chrome_tracing_data.setdefault("npu", {}).setdefault("hbm_usage_rate", []).append(
+                        {"ts_us": ts_us, "value": hbm}
                     )
 
             for pid in pids:
