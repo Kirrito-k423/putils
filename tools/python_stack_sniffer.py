@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Python Stack Sniffer Tool
 
@@ -20,6 +21,18 @@ Usage:
 
     # 自动间隔保存
     python python_stack_sniffer.py -p 1667631  -i 0.1 -o stack_trace.json --autosave-interval 10
+
+    # 开启 NPU 监控（默认 refresh interval=1 秒，timeout=2 秒）：
+    python python_stack_sniffer.py \
+      -p 12345 -i 0.2 -d 10 -o trace.json \
+      --npu-aicore-usage
+
+    # 自定义 npu-smi 刷新与超时：
+    python python_stack_sniffer.py \
+      -p 12345 -i 0.2 -d 10 -o trace.json \
+      --npu-aicore-usage \
+      --npu-smi-refresh-interval 1 \
+      --npu-smi-timeout 2.5
 """
 
 import argparse
@@ -30,6 +43,7 @@ import logging
 import re
 import os
 import tempfile
+import select
 from typing import List, Dict, Any, Optional, Tuple
 
 # Configure logging
@@ -72,6 +86,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--autosave-interval', type=float, default=0.0, help='Auto-save interval in seconds (0 to disable)')
     parser.add_argument('--autosave-output', type=str, default=None, help='Auto-save JSON file path (default: same as --output)')
     parser.add_argument('--all-threads', action='store_true', help='Capture all threads (default: only MainThread)')
+    parser.add_argument(
+        '--npu-aicore-usage',
+        action='store_true',
+        help='Sample `npu-smi info -t usages` Aicore Usage Rate(%) and record into output JSON',
+    )
+    parser.add_argument(
+        '--npu-smi-refresh-interval',
+        type=int,
+        default=1,
+        help='Refresh interval passed to `npu-smi info -t usages -i <N>` (seconds)',
+    )
+    parser.add_argument(
+        '--npu-smi-timeout',
+        type=float,
+        default=2.0,
+        help='Timeout in seconds for each npu-smi sampling attempt',
+    )
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
     return parser.parse_args()
 
@@ -160,6 +191,57 @@ def _get_pids_from_npu_smi_info() -> List[int]:
     return pids
 
 
+def _sample_npu_aicore_usage_rate(refresh_interval_s: int, timeout_s: float) -> Optional[int]:
+    cmd = ['npu-smi', 'info', '-t', 'usages', '-i', str(int(refresh_interval_s))]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    deadline = time.monotonic() + max(float(timeout_s or 0.0), 0.1)
+    try:
+        stdout = proc.stdout
+        if stdout is None:
+            return None
+
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            rlist, _, _ = select.select([stdout], [], [], max(0.0, remaining))
+            if not rlist:
+                continue
+
+            line = stdout.readline()
+            if not line:
+                break
+
+            lower = line.lower()
+            if 'aicore usage rate' not in lower:
+                continue
+
+            m = re.search(r':\s*(\d+)\b', line)
+            if not m:
+                continue
+
+            return int(m.group(1))
+
+        return None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+
+
 def _run_pyspy_dump(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
     try:
         result = subprocess.run(
@@ -177,7 +259,7 @@ def _run_pyspy_dump(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
 def get_stack_traces(pid: int) -> str:
     """Capture stack traces using py-spy dump (text output)."""
     cmds = [
-        ['py-spy', 'dump', '--pid', str(pid)],
+        ['py-spy', 'dump', '--pid', str(pid),"--native"],
         ['py-spy', 'dump', '-p', str(pid)],
     ]
 
@@ -425,6 +507,20 @@ def main():
         "displayTimeUnit": "us",
     }
 
+    collect_npu_aicore_usage = bool(args.npu_aicore_usage)
+    npu_smi_disabled = False
+    npu_trace_pid = 0
+    if collect_npu_aicore_usage:
+        chrome_tracing_data["traceEvents"].append(
+            {
+                "name": "process_name",
+                "ph": "M",
+                "ts": 0,
+                "pid": npu_trace_pid,
+                "args": {"name": "npu"},
+            }
+        )
+
     start_time = time.monotonic()
     next_tick = start_time
 
@@ -456,9 +552,32 @@ def main():
             if args.duration and (now - start_time) >= args.duration:
                 break
 
-            for pid in pids:
-                ts_us = int((time.monotonic() - start_time) * 1000000)
+            ts_us = int((time.monotonic() - start_time) * 1000000)
 
+            if collect_npu_aicore_usage and not npu_smi_disabled:
+                try:
+                    usage = _sample_npu_aicore_usage_rate(args.npu_smi_refresh_interval, args.npu_smi_timeout)
+                except FileNotFoundError:
+                    logger.error('npu-smi not found; disable --npu-aicore-usage')
+                    npu_smi_disabled = True
+                    usage = None
+
+                if usage is not None:
+                    chrome_tracing_data["traceEvents"].append(
+                        {
+                            "name": "npu_aicore_usage_rate",
+                            "ph": "C",
+                            "ts": ts_us,
+                            "pid": npu_trace_pid,
+                            "tid": 0,
+                            "args": {"aicore": usage},
+                        }
+                    )
+                    chrome_tracing_data.setdefault("npu", {}).setdefault("aicore_usage_rate", []).append(
+                        {"ts_us": ts_us, "value": usage}
+                    )
+
+            for pid in pids:
                 pyspy_output = get_stack_traces(pid)
                 stack_data = parse_pyspy_output(pyspy_output) if pyspy_output else {"threads": []}
                 stack_data = _filter_stack_data(stack_data, main_thread_only)
