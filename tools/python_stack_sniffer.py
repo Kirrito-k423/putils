@@ -6,11 +6,10 @@ Python Stack Sniffer Tool
 This tool periodically captures stack traces from a Python process using py-spy
 and converts them to Chrome Tracing JSON format for visualization.
 
-Usage:
-    python python_stack_sniffer.py -p <pid> -i <interval> -o <output.json>
-
 中文使用说明：
-    
+
+推荐:
+    python python_stack_sniffer.py -i 1 -o stack_trace.json --autosave-interval 10 --npu-usage --cpu-mem-usage --all-thread
 
 使用场景示例：
     # 不传pid：自动从npu-smi info抓取所有进程pid
