@@ -37,6 +37,10 @@ Usage:
     # 开启CPU监控
     --cpu-mem-usage：开启 CPU 内存监控
     --cpu-mem-timeout：每次采样 free 的超时（默认 1s）
+
+    # 长跑防止文件过大，及时保存
+    --autosave-snapshot-interval：默认 7200 秒（2 小时），设为 0 可关闭
+    --autosave-snapshot-output：快照输出基准路径（默认同 --output），实际写入时会自动生成
 """
 
 import argparse
@@ -73,6 +77,26 @@ def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
                 pass
 
 
+def _make_time_tagged_path(file_path: str, ts: Optional[float] = None) -> str:
+    if ts is None:
+        ts = time.time()
+
+    tag_base = time.strftime('%Y%m%d_%H%M%S', time.localtime(ts))
+    ms = int((ts - int(ts)) * 1000)
+    tag = f"{tag_base}_{ms:03d}"
+
+    dir_name = os.path.dirname(file_path)
+    base_name = os.path.basename(file_path)
+    stem, ext = os.path.splitext(base_name)
+
+    if ext:
+        tagged = f"{stem}.{tag}{ext}"
+    else:
+        tagged = f"{base_name}.{tag}"
+
+    return os.path.join(dir_name, tagged) if dir_name else tagged
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Python Stack Sniffer for Chrome Tracing')
@@ -89,6 +113,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('-d', '--duration', type=float, help='Duration to run in seconds (optional)')
     parser.add_argument('--autosave-interval', type=float, default=0.0, help='Auto-save interval in seconds (0 to disable)')
     parser.add_argument('--autosave-output', type=str, default=None, help='Auto-save JSON file path (default: same as --output)')
+    parser.add_argument(
+        '--autosave-snapshot-interval',
+        type=float,
+        default=7200.0,
+        help='Auto-save snapshot interval in seconds (0 to disable). Snapshot file names include a time tag.',
+    )
+    parser.add_argument(
+        '--autosave-snapshot-output',
+        type=str,
+        default=None,
+        help='Auto-save snapshot base JSON file path (default: same as --output)',
+    )
     parser.add_argument('--all-threads', action='store_true', help='Capture all threads (default: only MainThread)')
     parser.add_argument(
         '--npu-usage',
@@ -575,6 +611,13 @@ def main():
     if autosave_interval_s > 0:
         logger.info(f"Auto-save: every {autosave_interval_s} seconds -> {autosave_output}")
 
+    autosave_snapshot_interval_s = float(args.autosave_snapshot_interval or 0.0)
+    autosave_snapshot_output = args.autosave_snapshot_output or args.output
+    if autosave_snapshot_interval_s > 0:
+        logger.info(
+            f"Auto-save snapshot: every {autosave_snapshot_interval_s} seconds -> {autosave_snapshot_output} (+time tag)"
+        )
+
     chrome_tracing_data = {
         "traceEvents": [],
         "displayTimeUnit": "us",
@@ -632,6 +675,7 @@ def main():
         )
     
     last_autosave_time = time.monotonic()
+    last_autosave_snapshot_time = time.monotonic()
 
     try:
         while True:
@@ -734,6 +778,11 @@ def main():
             if autosave_interval_s > 0 and (now - last_autosave_time) >= autosave_interval_s:
                 _atomic_write_json(autosave_output, chrome_tracing_data, indent=2)
                 last_autosave_time = now
+
+            if autosave_snapshot_interval_s > 0 and (now - last_autosave_snapshot_time) >= autosave_snapshot_interval_s:
+                snapshot_path = _make_time_tagged_path(autosave_snapshot_output)
+                _atomic_write_json(snapshot_path, chrome_tracing_data, indent=2)
+                last_autosave_snapshot_time = now
 
             next_tick += args.interval
             sleep_s = next_tick - time.monotonic()
