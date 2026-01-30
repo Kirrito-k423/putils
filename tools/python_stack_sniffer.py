@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Python Stack Sniffer Tool
 
@@ -52,6 +53,7 @@ Usage:
     * npu-smi info PID 列表为空：每 5s 刷新一次；如果连续 180s 都为空，自动结束并在 finally 保存最后 JSON。
     * npu-smi info PID 列表非空：每 30s 刷新一次，把新出现的 PID 加入监控；同时把消失的 PID 从监控中移除并关闭其 open stacks，避免遗漏/脏数据。
     * 运行中如果某个 PID 退出导致采集失败，也会自动停止跟踪该 PID（不再仅限手工 pid list）。
+* 记录项包括绝对时间
 """
 
 import argparse
@@ -86,6 +88,12 @@ def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+def _format_abs_time(start_wall_time_s: float, ts_us: int) -> str:
+    abs_s = float(start_wall_time_s) + (float(ts_us) / 1000000.0)
+    return time.strftime('%Y-%m-%d %H:%M', time.localtime(abs_s))
+
 
 
 def _make_time_tagged_path(file_path: str, ts: Optional[float] = None) -> str:
@@ -498,6 +506,7 @@ def convert_to_chrome_tracing(
     pid: int,
     stack_data: Dict[str, Any],
     ts_us: int,
+    abs_time: str,
     seen_thread_ids: set,
     open_stacks: Dict[int, List[str]],
 ) -> List[Dict[str, Any]]:
@@ -520,7 +529,7 @@ def convert_to_chrome_tracing(
                     "ts": ts_us,
                     "tid": thread_id,
                     "pid": pid,
-                    "args": {"name": thread_name},
+                    "args": {"name": thread_name, "abs_time": abs_time},
                 }
             )
             seen_thread_ids.add(thread_id)
@@ -548,6 +557,7 @@ def convert_to_chrome_tracing(
                     "ts": ts_us,
                     "tid": thread_id,
                     "pid": pid,
+                    "args": {"abs_time": abs_time},
                 }
             )
 
@@ -565,6 +575,7 @@ def convert_to_chrome_tracing(
                         "function": frame.get("name", "unknown"),
                         "file": frame.get("filename", "unknown"),
                         "line": frame.get("lineno", 0),
+                        "abs_time": abs_time,
                     },
                 }
             )
@@ -583,6 +594,7 @@ def convert_to_chrome_tracing(
                     "ts": ts_us,
                     "tid": thread_id,
                     "pid": pid,
+                    "args": {"abs_time": abs_time},
                 }
             )
         open_stacks.pop(thread_id, None)
@@ -590,7 +602,7 @@ def convert_to_chrome_tracing(
     return events
 
 
-def close_open_stacks(pid: int, ts_us: int, open_stacks: Dict[int, List[str]]) -> List[Dict[str, Any]]:
+def close_open_stacks(pid: int, ts_us: int, abs_time: str, open_stacks: Dict[int, List[str]]) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for thread_id, names in list(open_stacks.items()):
         for i in range(len(names) - 1, -1, -1):
@@ -601,10 +613,12 @@ def close_open_stacks(pid: int, ts_us: int, open_stacks: Dict[int, List[str]]) -
                     "ts": ts_us,
                     "tid": thread_id,
                     "pid": pid,
+                    "args": {"abs_time": abs_time},
                 }
             )
     open_stacks.clear()
     return events
+
 
 
 def main():
@@ -705,6 +719,8 @@ def main():
     AUTO_PID_EMPTY_EXIT_AFTER_S = 180.0
 
     start_time = time.monotonic()
+    start_wall_time = time.time()
+    abs_time0 = _format_abs_time(start_wall_time, 0)
     next_tick = start_time
 
     last_pid_refresh_time = time.monotonic()
@@ -732,6 +748,13 @@ def main():
             }
         )
     
+    for ev in chrome_tracing_data.get("traceEvents", []):
+        ev_args = ev.get("args")
+        if not isinstance(ev_args, dict):
+            ev_args = {}
+            ev["args"] = ev_args
+        ev_args.setdefault("abs_time", abs_time0)
+
     last_autosave_time = time.monotonic()
     last_autosave_snapshot_time = time.monotonic()
 
@@ -742,6 +765,7 @@ def main():
                 break
 
             ts_us = int((time.monotonic() - start_time) * 1000000)
+            abs_time = _format_abs_time(start_wall_time, ts_us)
 
             stop_capture = False
             if not manual_pid_list:
@@ -759,7 +783,7 @@ def main():
                     for rpid in removed:
                         st = states.pop(rpid, None)
                         if st:
-                            events = close_open_stacks(rpid, ts_us, st["open_stacks"])
+                            events = close_open_stacks(rpid, ts_us, abs_time, st["open_stacks"])
                             chrome_tracing_data["traceEvents"].extend(events)
 
                     if removed:
@@ -777,7 +801,7 @@ def main():
                                 "ph": "M",
                                 "ts": 0,
                                 "pid": apid,
-                                "args": {"name": f"python pid {apid}"},
+                                "args": {"name": f"python pid {apid}", "abs_time": abs_time},
                             }
                         )
 
@@ -817,7 +841,7 @@ def main():
                             "ts": ts_us,
                             "pid": npu_trace_pid,
                             "tid": 0,
-                            "args": {"aicore": aicore},
+                            "args": {"aicore": aicore, "abs_time": abs_time},
                         }
                     )
                     chrome_tracing_data.setdefault("npu", {}).setdefault("aicore_usage_rate", []).append(
@@ -833,7 +857,7 @@ def main():
                             "ts": ts_us,
                             "pid": npu_trace_pid,
                             "tid": 0,
-                            "args": {"hbm": hbm},
+                            "args": {"hbm": hbm, "abs_time": abs_time},
                         }
                     )
                     chrome_tracing_data.setdefault("npu", {}).setdefault("hbm_usage_rate", []).append(
@@ -865,6 +889,7 @@ def main():
                                 "used_bytes": int(mem["used_bytes"]),
                                 "available_bytes": int(mem["available_bytes"]),
                                 "usage_rate": int(mem["usage_rate"]),
+                                "abs_time": abs_time,
                             },
                         }
                     )
@@ -882,7 +907,7 @@ def main():
                     if not _pid_exists(pid):
                         st = states.pop(pid, None)
                         if st:
-                            events = close_open_stacks(pid, ts_us, st["open_stacks"])
+                            events = close_open_stacks(pid, ts_us, abs_time, st["open_stacks"])
                             chrome_tracing_data["traceEvents"].extend(events)
 
                         try:
@@ -911,6 +936,7 @@ def main():
                     pid,
                     stack_data,
                     ts_us,
+                    abs_time,
                     st["seen_thread_ids"],
                     st["open_stacks"],
                 )
@@ -947,11 +973,12 @@ def main():
         raise
     finally:
         end_ts_us = int((time.monotonic() - start_time) * 1000000)
+        end_abs_time = _format_abs_time(start_wall_time, end_ts_us)
         for pid in pids:
             st = states.get(pid)
             if not st:
                 continue
-            events = close_open_stacks(pid, end_ts_us, st["open_stacks"])
+            events = close_open_stacks(pid, end_ts_us, end_abs_time, st["open_stacks"])
             chrome_tracing_data["traceEvents"].extend(events)
 
         _atomic_write_json(args.output, chrome_tracing_data, indent=2)
