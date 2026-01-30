@@ -42,6 +42,16 @@ Usage:
     # 长跑防止文件过大，及时保存
     --autosave-snapshot-interval：默认 7200 秒（2 小时），设为 0 可关闭
     --autosave-snapshot-output：快照输出基准路径（默认同 --output），实际写入时会自动生成
+
+基础特性：
+
+* 手工指定 pid list”场景生效）：
+    * 当 py-spy 采集失败时，如果检测到对应 pid 已不存在（os.kill(pid, 0) -> ProcessLookupError），就把该 pid 从跟踪列表移除，并立刻关闭该 pid 的 open stacks，后续不再跟踪。
+    * 如果手工指定的 pid list 全部都失效（运行中被移除到空列表，或启动前就都不存在），会保存最后的 JSON（启动前全失效则保存空 traceEvents），程序自动结束。
+* 针对“不指定 pid（走 npu-smi info 自动发现）”场景：
+    * npu-smi info PID 列表为空：每 5s 刷新一次；如果连续 180s 都为空，自动结束并在 finally 保存最后 JSON。
+    * npu-smi info PID 列表非空：每 30s 刷新一次，把新出现的 PID 加入监控；同时把消失的 PID 从监控中移除并关闭其 open stacks，避免遗漏/脏数据。
+    * 运行中如果某个 PID 退出导致采集失败，也会自动停止跟踪该 PID（不再仅限手工 pid list）。
 """
 
 import argparse
