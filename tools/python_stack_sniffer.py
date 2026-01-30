@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-#!/usr/bin/env python3
 """
 Python Stack Sniffer Tool
 
 This tool periodically captures stack traces from a Python process using py-spy
 and converts them to Chrome Tracing JSON format for visualization.
 
-中文使用说明：
+Usage:
+    python python_stack_sniffer.py -p <pid> -i <interval> -o <output.json>
 
+中文使用说明：
+    
 推荐:
     python python_stack_sniffer.py -i 1 -o stack_trace.json --autosave-interval 10 --npu-usage --cpu-mem-usage --all-thread
 
@@ -182,6 +184,18 @@ def _normalize_pids(pid_args: List[str]) -> List[int]:
         raise ValueError('empty pid list')
 
     return pids
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def _filter_stack_data(stack_data: Dict[str, Any], main_thread_only: bool) -> Dict[str, Any]:
@@ -364,23 +378,21 @@ def _run_pyspy_dump(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
         return None, stderr
 
 
-def get_stack_traces(pid: int) -> str:
+def get_stack_traces(pid: int) -> Tuple[str, Optional[str]]:
     """Capture stack traces using py-spy dump (text output)."""
     cmds = [
-        ['py-spy', 'dump', '--pid', str(pid),"--native"],
+        ['py-spy', 'dump', '--pid', str(pid), "--native"],
         ['py-spy', 'dump', '-p', str(pid)],
     ]
 
-    last_err = None
+    last_err: Optional[str] = None
     for cmd in cmds:
         stdout, err = _run_pyspy_dump(cmd)
         if stdout is not None:
-            return stdout
+            return stdout, None
         last_err = err
 
-    if last_err:
-        logger.error(f"Failed to capture stack traces: {last_err}")
-    return ""
+    return "", last_err
 
 
 _THREAD_HEADER_RE = re.compile(r'^Thread\s+(?P<rest>.+?)\s*$')
@@ -591,16 +603,44 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
+    manual_pid_list = bool(args.pids)
+
     if args.pids:
         pids = _normalize_pids(args.pids)
     else:
         pids = _get_pids_from_npu_smi_info()
+
+    if manual_pid_list:
+        alive: List[int] = []
+        missing: List[int] = []
+        for pid in pids:
+            if _pid_exists(pid):
+                alive.append(pid)
+            else:
+                missing.append(pid)
+
+        if missing:
+            logger.warning(f"Specified PIDs not running and will be skipped: {','.join(map(str, missing))}")
+
+        pids = alive
         if not pids:
-            raise RuntimeError('No PIDs found from `npu-smi info` and no -p/--pid provided')
+            chrome_tracing_data = {
+                "traceEvents": [],
+                "displayTimeUnit": "us",
+            }
+            _atomic_write_json(args.output, chrome_tracing_data, indent=2)
+            logger.info("All specified PIDs are not running; saved empty trace and exiting")
+            logger.info(f"Chrome Tracing file saved to: {args.output}")
+            return
 
     main_thread_only = not args.all_threads
 
-    logger.info(f"Starting Python Stack Sniffer for PIDs: {','.join(map(str, pids))}")
+    if pids:
+        logger.info(f"Starting Python Stack Sniffer for PIDs: {','.join(map(str, pids))}")
+    else:
+        logger.info("Starting Python Stack Sniffer with auto PID discovery from `npu-smi info` (no initial PIDs)")
+        logger.info("PID discovery: refresh every 5s when empty; exit if empty for 180s; refresh every 30s when non-empty")
+
     logger.info(f"Sampling interval: {args.interval} seconds")
     logger.info(f"Output file: {args.output}")
     logger.info(f"Threads: {'MainThread only' if main_thread_only else 'all'}")
@@ -650,8 +690,17 @@ def main():
             }
         )
 
+    AUTO_PID_REFRESH_NO_PIDS_S = 5.0
+    AUTO_PID_REFRESH_WITH_PIDS_S = 30.0
+    AUTO_PID_EMPTY_EXIT_AFTER_S = 180.0
+
     start_time = time.monotonic()
     next_tick = start_time
+
+    last_pid_refresh_time = time.monotonic()
+    empty_since: Optional[float] = None
+    if (not manual_pid_list) and (not pids):
+        empty_since = start_time
 
     sample_count = 0
 
@@ -683,6 +732,63 @@ def main():
                 break
 
             ts_us = int((time.monotonic() - start_time) * 1000000)
+
+            stop_capture = False
+            if not manual_pid_list:
+                refresh_interval_s = AUTO_PID_REFRESH_WITH_PIDS_S if pids else AUTO_PID_REFRESH_NO_PIDS_S
+                if (now - last_pid_refresh_time) >= refresh_interval_s:
+                    discovered = _get_pids_from_npu_smi_info()
+                    last_pid_refresh_time = now
+
+                    prev_set = set(pids)
+                    new_set = set(discovered)
+
+                    removed = sorted(prev_set - new_set)
+                    added = sorted(new_set - prev_set)
+
+                    for rpid in removed:
+                        st = states.pop(rpid, None)
+                        if st:
+                            events = close_open_stacks(rpid, ts_us, st["open_stacks"])
+                            chrome_tracing_data["traceEvents"].extend(events)
+
+                    if removed:
+                        logger.info(f"Auto PID refresh: removed {','.join(map(str, removed))}")
+
+                    for apid in added:
+                        states[apid] = {
+                            "seen_thread_ids": set(),
+                            "open_stacks": {},
+                            "last_ts_us": None,
+                        }
+                        chrome_tracing_data["traceEvents"].append(
+                            {
+                                "name": "process_name",
+                                "ph": "M",
+                                "ts": 0,
+                                "pid": apid,
+                                "args": {"name": f"python pid {apid}"},
+                            }
+                        )
+
+                    if added:
+                        logger.info(f"Auto PID refresh: added {','.join(map(str, added))}")
+
+                    pids = sorted(new_set)
+
+                    if not pids:
+                        if empty_since is None:
+                            empty_since = now
+                        elif (now - empty_since) >= AUTO_PID_EMPTY_EXIT_AFTER_S:
+                            logger.info(
+                                f"No PIDs from `npu-smi info` for {int(AUTO_PID_EMPTY_EXIT_AFTER_S)}s; stopping capture"
+                            )
+                            stop_capture = True
+                    else:
+                        empty_since = None
+
+            if stop_capture:
+                break
 
             if collect_npu_usage and not npu_smi_disabled:
                 try:
@@ -756,9 +862,38 @@ def main():
                         {"ts_us": ts_us, **mem}
                     )
 
-            for pid in pids:
-                pyspy_output = get_stack_traces(pid)
-                stack_data = parse_pyspy_output(pyspy_output) if pyspy_output else {"threads": []}
+            for pid in list(pids):
+                pyspy_output, pyspy_err = get_stack_traces(pid)
+
+                if not pyspy_output:
+                    if pyspy_err:
+                        logger.error(f"Failed to capture stack traces: {pyspy_err}")
+
+                    if not _pid_exists(pid):
+                        st = states.pop(pid, None)
+                        if st:
+                            events = close_open_stacks(pid, ts_us, st["open_stacks"])
+                            chrome_tracing_data["traceEvents"].extend(events)
+
+                        try:
+                            pids.remove(pid)
+                        except ValueError:
+                            pass
+
+                        logger.info(f"PID {pid} not running; stop tracking")
+
+                        if manual_pid_list:
+                            if not pids:
+                                logger.info("All specified PIDs have exited; stopping capture")
+                                stop_capture = True
+                                break
+                        else:
+                            if (not pids) and (empty_since is None):
+                                empty_since = now
+
+                    continue
+
+                stack_data = parse_pyspy_output(pyspy_output)
                 stack_data = _filter_stack_data(stack_data, main_thread_only)
 
                 st = states[pid]
@@ -774,6 +909,9 @@ def main():
 
                 st["last_ts_us"] = ts_us
 
+            if stop_capture:
+                break
+
             if autosave_interval_s > 0 and (now - last_autosave_time) >= autosave_interval_s:
                 _atomic_write_json(autosave_output, chrome_tracing_data, indent=2)
                 last_autosave_time = now
@@ -783,7 +921,11 @@ def main():
                 _atomic_write_json(snapshot_path, chrome_tracing_data, indent=2)
                 last_autosave_snapshot_time = now
 
-            next_tick += args.interval
+            if (not manual_pid_list) and (not pids):
+                next_tick = time.monotonic() + AUTO_PID_REFRESH_NO_PIDS_S
+            else:
+                next_tick += args.interval
+
             sleep_s = next_tick - time.monotonic()
             if sleep_s > 0:
                 time.sleep(sleep_s)
