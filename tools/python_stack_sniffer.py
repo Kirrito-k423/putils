@@ -11,8 +11,8 @@ Usage:
 
 中文使用说明：
     
-推荐:
-    python python_stack_sniffer.py -i 1 -o stack_trace.json --autosave-interval 10 --npu-usage --cpu-mem-usage --all-thread
+推荐:（全量PID采集，过于频繁会导致性能劣化3+倍）
+    python python_stack_sniffer.py -i 60 -o stack_trace.json --autosave-interval 60 --npu-usage --cpu-mem-usage --all-thread
 
 使用场景示例：
     # 不传pid：自动从npu-smi info抓取所有进程pid
