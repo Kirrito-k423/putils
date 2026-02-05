@@ -50,6 +50,7 @@ Usage:
     * 当 py-spy 采集失败时，如果检测到对应 pid 已不存在（os.kill(pid, 0) -> ProcessLookupError），就把该 pid 从跟踪列表移除，并立刻关闭该 pid 的 open stacks，后续不再跟踪。
     * 如果手工指定的 pid list 全部都失效（运行中被移除到空列表，或启动前就都不存在），会保存最后的 JSON（启动前全失效则保存空 traceEvents），程序自动结束。
 * 针对“不指定 pid（走 npu-smi info 自动发现）”场景：
+    * npu-smi info PID 列表 查询时，默认MIN_HBM_USAGE_MB以下的任务为过滤项，不纳入监控。
     * npu-smi info PID 列表为空：每 5s 刷新一次；如果连续 180s 都为空，自动结束并在 finally 保存最后 JSON。
     * npu-smi info PID 列表非空：每 30s 刷新一次，把新出现的 PID 加入监控；同时把消失的 PID 从监控中移除并关闭其 open stacks，避免遗漏/脏数据。
     * 运行中如果某个 PID 退出导致采集失败，也会自动停止跟踪该 PID（不再仅限手工 pid list）。
@@ -229,6 +230,8 @@ def _filter_stack_data(stack_data: Dict[str, Any], main_thread_only: bool) -> Di
 
 
 def _get_pids_from_npu_smi_info() -> List[int]:
+    MIN_HBM_USAGE_MB = 5000
+
     try:
         result = subprocess.run(
             ['npu-smi', 'info'],
@@ -243,15 +246,35 @@ def _get_pids_from_npu_smi_info() -> List[int]:
         logger.error(f"npu-smi info failed: {(e.stderr or '').strip()}")
         return []
 
+    def _find_col_index(cols: List[str], patterns: List[str]) -> Optional[int]:
+        for i, c in enumerate(cols):
+            for p in patterns:
+                if re.search(p, c):
+                    return i
+        return None
+
+    def _parse_int(cell: str) -> Optional[int]:
+        m = re.search(r'(\d+)', cell)
+        return int(m.group(1)) if m else None
+
     pids: List[int] = []
     seen = set()
     in_process_table = False
+    pid_col: Optional[int] = None
+    mem_col: Optional[int] = None
 
     for raw_line in (result.stdout or '').splitlines():
         line = raw_line.rstrip('\n')
-        header = line.lower()
-        if re.search(r'process\s*id', header) and re.search(r'process\s*name', header):
+        lower = line.lower()
+        if re.search(r'process\s*id', lower) and re.search(r'process\s*name', lower):
             in_process_table = True
+            if '|' in line:
+                header_cols = [p.strip().lower() for p in line.strip().strip('|').split('|')]
+                pid_col = _find_col_index(header_cols, [r'\bpid\b', r'process\s*id'])
+                mem_col = _find_col_index(
+                    header_cols,
+                    [r'hbm.*usage', r'memory.*usage', r'\busage\b.*\bmb\b', r'\bmb\b.*\busage\b'],
+                )
             continue
         if not in_process_table:
             continue
@@ -265,11 +288,23 @@ def _get_pids_from_npu_smi_info() -> List[int]:
             continue
 
         pid_str: Optional[str] = None
-        for token in parts[1:]:
-            if token.isdigit():
-                pid_str = token
-                break
+        if pid_col is not None and 0 <= pid_col < len(parts) and parts[pid_col].isdigit():
+            pid_str = parts[pid_col]
+        else:
+            for token in parts[1:]:
+                if token.isdigit():
+                    pid_str = token
+                    break
         if pid_str is None:
+            continue
+
+        mem_mb: Optional[int] = None
+        if mem_col is not None and 0 <= mem_col < len(parts):
+            mem_mb = _parse_int(parts[mem_col])
+        elif parts:
+            mem_mb = _parse_int(parts[-1])
+
+        if mem_mb is not None and mem_mb < MIN_HBM_USAGE_MB:
             continue
 
         pid = int(pid_str)
