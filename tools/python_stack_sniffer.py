@@ -55,6 +55,7 @@ Usage:
     * npu-smi info PID 列表非空：每 30s 刷新一次，把新出现的 PID 加入监控；同时把消失的 PID 从监控中移除并关闭其 open stacks，避免遗漏/脏数据。
     * 运行中如果某个 PID 退出导致采集失败，也会自动停止跟踪该 PID（不再仅限手工 pid list）。
 * 记录项包括绝对时间
+* 还会记录采样的各阶段和命令的耗时，最终汇总信息打印
 """
 
 import argparse
@@ -71,6 +72,59 @@ from typing import List, Dict, Any, Optional, Tuple
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _ensure_output_log_file_handler(output_path: str) -> str:
+    log_path = f"{output_path}.log"
+    abs_log_path = os.path.abspath(log_path)
+
+    for h in list(logger.handlers):
+        if isinstance(h, logging.FileHandler):
+            try:
+                if os.path.abspath(getattr(h, 'baseFilename', '')) == abs_log_path:
+                    return log_path
+            except Exception:
+                pass
+
+    fh = logging.FileHandler(log_path, encoding='utf-8')
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(fh)
+    return log_path
+
+
+def _timing_add(stats: Dict[str, Dict[str, float]], name: str, dt_s: float) -> None:
+    if dt_s < 0:
+        return
+    st = stats.get(name)
+    if st is None:
+        stats[name] = {
+            "count": 1.0,
+            "total_s": float(dt_s),
+            "max_s": float(dt_s),
+            "min_s": float(dt_s),
+        }
+        return
+
+    st["count"] = float(st.get("count", 0.0)) + 1.0
+    st["total_s"] = float(st.get("total_s", 0.0)) + float(dt_s)
+    st["max_s"] = max(float(st.get("max_s", 0.0)), float(dt_s))
+    st["min_s"] = min(float(st.get("min_s", dt_s)), float(dt_s))
+
+
+def _format_timing_summary(stats: Dict[str, Dict[str, float]]) -> List[str]:
+    lines: List[str] = []
+    for name in sorted(stats.keys()):
+        st = stats[name]
+        count = int(st.get("count", 0.0))
+        total_s = float(st.get("total_s", 0.0))
+        if count <= 0:
+            continue
+        avg_ms = (total_s * 1000.0) / float(count)
+        max_ms = float(st.get("max_s", 0.0)) * 1000.0
+        min_ms = float(st.get("min_s", 0.0)) * 1000.0
+        lines.append(f"{name}: count={count} avg={avg_ms:.2f}ms min={min_ms:.2f}ms max={max_ms:.2f}ms total={total_s:.3f}s")
+    return lines
 
 
 def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
@@ -662,6 +716,11 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
+    log_path = _ensure_output_log_file_handler(args.output)
+    logger.info(f"Timing log file: {log_path}")
+
+    timing_stats: Dict[str, Dict[str, float]] = {}
+
     manual_pid_list = bool(args.pids)
 
     if args.pids:
@@ -795,6 +854,8 @@ def main():
 
     try:
         while True:
+            iter_t0 = time.monotonic()
+
             now = time.monotonic()
             if args.duration and (now - start_time) >= args.duration:
                 break
@@ -806,7 +867,13 @@ def main():
             if not manual_pid_list:
                 refresh_interval_s = AUTO_PID_REFRESH_WITH_PIDS_S if pids else AUTO_PID_REFRESH_NO_PIDS_S
                 if (now - last_pid_refresh_time) >= refresh_interval_s:
+                    t0 = time.monotonic()
                     discovered = _get_pids_from_npu_smi_info()
+                    dt = time.monotonic() - t0
+                    _timing_add(timing_stats, "npu_smi_info_discover", dt)
+                    logger.info(
+                        f"timing npu-smi info discover: {dt * 1000.0:.2f}ms pids={len(discovered)}"
+                    )
                     last_pid_refresh_time = now
 
                     prev_set = set(pids)
@@ -861,7 +928,9 @@ def main():
 
             if collect_npu_usage and not npu_smi_disabled:
                 try:
+                    t0 = time.monotonic()
                     rates = _sample_npu_usage_rates(args.npu_smi_refresh_interval, args.npu_smi_timeout)
+                    _timing_add(timing_stats, "npu_smi_usages_sample", time.monotonic() - t0)
                 except FileNotFoundError:
                     logger.error('npu-smi not found; disable --npu-usage')
                     npu_smi_disabled = True
@@ -901,7 +970,9 @@ def main():
 
             if collect_cpu_mem_usage and not cpu_mem_disabled:
                 try:
+                    t0 = time.monotonic()
                     mem = _sample_cpu_mem_stats(args.cpu_mem_timeout)
+                    _timing_add(timing_stats, "free_mem_sample", time.monotonic() - t0)
                 except FileNotFoundError:
                     logger.error('free not found; disable --cpu-mem-usage')
                     cpu_mem_disabled = True
@@ -933,7 +1004,14 @@ def main():
                     )
 
             for pid in list(pids):
+                t0 = time.monotonic()
                 pyspy_output, pyspy_err = get_stack_traces(pid)
+                dt = time.monotonic() - t0
+                _timing_add(timing_stats, "pyspy_dump", dt)
+                if dt >= 1.0 or (not pyspy_output):
+                    logger.info(
+                        f"timing py-spy dump: pid={pid} {dt * 1000.0:.2f}ms ok={bool(pyspy_output)}"
+                    )
 
                 if not pyspy_output:
                     if pyspy_err:
@@ -984,12 +1062,16 @@ def main():
                 break
 
             if autosave_interval_s > 0 and (now - last_autosave_time) >= autosave_interval_s:
+                t0 = time.monotonic()
                 _atomic_write_json(autosave_output, chrome_tracing_data, indent=2)
+                _timing_add(timing_stats, "autosave_write_json", time.monotonic() - t0)
                 last_autosave_time = now
 
             if autosave_snapshot_interval_s > 0 and (now - last_autosave_snapshot_time) >= autosave_snapshot_interval_s:
                 snapshot_path = _make_time_tagged_path(autosave_snapshot_output)
+                t0 = time.monotonic()
                 _atomic_write_json(snapshot_path, chrome_tracing_data, indent=2)
+                _timing_add(timing_stats, "autosave_snapshot_write_json", time.monotonic() - t0)
                 last_autosave_snapshot_time = now
 
             if (not manual_pid_list) and (not pids):
@@ -997,8 +1079,14 @@ def main():
             else:
                 next_tick += args.interval
 
+            iter_dt = time.monotonic() - iter_t0
+            _timing_add(timing_stats, "loop_total", iter_dt)
+            if iter_dt >= 2.0:
+                logger.info(f"timing loop_total: {iter_dt * 1000.0:.2f}ms pids={len(pids)}")
+
             sleep_s = next_tick - time.monotonic()
             if sleep_s > 0:
+                _timing_add(timing_stats, "loop_sleep", sleep_s)
                 time.sleep(sleep_s)
             
     except KeyboardInterrupt:
@@ -1016,11 +1104,20 @@ def main():
             events = close_open_stacks(pid, end_ts_us, end_abs_time, st["open_stacks"])
             chrome_tracing_data["traceEvents"].extend(events)
 
+        t0 = time.monotonic()
         _atomic_write_json(args.output, chrome_tracing_data, indent=2)
-        
+        _timing_add(timing_stats, "final_write_json", time.monotonic() - t0)
+
         logger.info(f"Capture completed")
         logger.info(f"Total samples: {sample_count}")
         logger.info(f"Chrome Tracing file saved to: {args.output}")
+
+        summary_lines = _format_timing_summary(timing_stats)
+        if summary_lines:
+            logger.info("Timing summary:")
+            for line in summary_lines:
+                logger.info(line)
+
         logger.info(f"To view, open chrome://tracing in Chrome and load the file")
 
 
