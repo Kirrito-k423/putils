@@ -8,7 +8,6 @@ from filelock import FileLock
 # async_saver = AsyncTorchSaver()
 # async_saver.save(full_sd, model_path)
 
-
 def to_cpu(obj):
     if isinstance(obj, dict):
         return {k: to_cpu(v) for k, v in obj.items()}
@@ -43,11 +42,21 @@ class AsyncTorchSaver:
         parent_dir = os.path.dirname(final_path)
         os.makedirs(parent_dir, exist_ok=True)
 
-        # 目录级锁
+        # 目录级锁（防止并发写网盘）
         lock_path = os.path.join(parent_dir, ".write.lock")
 
-        tmp_file = os.path.join(
+        # 本地 tmp（本地 FS）
+        local_tmp = os.path.join(
             self.tmp_dir,
+            f"{os.path.basename(final_path)}.{uuid.uuid4().hex}.tmp"
+        )
+
+        # 网盘内 staging（同 FS，供原子 replace）
+        staging_dir = os.path.join(parent_dir, ".staging")
+        os.makedirs(staging_dir, exist_ok=True)
+
+        staging_tmp = os.path.join(
+            staging_dir,
             f"{os.path.basename(final_path)}.{uuid.uuid4().hex}.tmp"
         )
 
@@ -56,16 +65,25 @@ class AsyncTorchSaver:
             obj_cpu = to_cpu(obj)
 
             # 2. 写本地 tmp（快、稳定）
-            torch.save(obj_cpu, tmp_file)
+            torch.save(obj_cpu, local_tmp)
 
-            # 3. 串行写网盘（目录级锁）
+            # 3. copy 到 网盘 staging（跨 FS，只能 copy）
+            #    这一步不要求原子，只要可重试
+            import shutil
+            shutil.copy2(local_tmp, staging_tmp)
+
+            # 4. 目录级锁 + 原子 replace（同 FS，**关键**）
             with FileLock(lock_path):
-                os.replace(tmp_file, final_path)
+                os.replace(staging_tmp, final_path)
 
         except Exception as e:
             print(f"[async_torch_save] failed: {final_path}, err={e}")
-            try:
-                if os.path.exists(tmp_file):
-                    os.remove(tmp_file)
-            except Exception:
-                pass
+
+        finally:
+            # 清理临时文件（尽力而为）
+            for f in (local_tmp, staging_tmp):
+                try:
+                    if os.path.exists(f):
+                        os.remove(f)
+                except Exception:
+                    pass
