@@ -87,8 +87,11 @@ class RolloutCache:
         return None
 
     def save(self, key, value):
-        path = self._cache_path(key)
-        torch.save(value, path)
+        try:
+            path = self._cache_path(key)
+            torch.save(value, path)
+        except Exception as e:
+            print(f"RolloutCache save error: {e}")
 
 @contextmanager
 def rollout_cache(cache: RolloutCache, *inputs):
