@@ -2,10 +2,14 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
+# Import device module to check torch availability
+from device import TORCH_AVAILABLE
+
 
 class TestDeviceAvailability:
     """Test device availability detection functions."""
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('device.torch')
     def test_is_torch_npu_available_false_no_import(self, mock_torch):
         """Test NPU availability returns False when torch_npu not available."""
@@ -16,6 +20,7 @@ class TestDeviceAvailability:
             result = is_torch_npu_available()
             assert result is False
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('device.torch')
     def test_is_cuda_available_property(self, mock_torch):
         """Test CUDA availability check."""
@@ -81,6 +86,7 @@ class TestVisibleDevices:
 class TestTorchDevice:
     """Test torch device related functions."""
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('device.get_device_name')
     @patch('device.torch')
     def test_get_torch_device_success(self, mock_torch, mock_get_device):
@@ -96,6 +102,7 @@ class TestTorchDevice:
                 # Result should be the cuda module or similar
                 assert result is not None
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('device.get_device_name')
     @patch('device.torch')
     def test_get_torch_device_fallback(self, mock_torch, mock_get_device):

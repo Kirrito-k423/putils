@@ -10,7 +10,12 @@
 
 import logging
 
-import torch
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +30,12 @@ def is_torch_npu_available() -> bool:
         return False
 
 
-is_cuda_available = torch.cuda.is_available()
-is_npu_available = is_torch_npu_available()
+if TORCH_AVAILABLE:
+    is_cuda_available = torch.cuda.is_available()
+    is_npu_available = is_torch_npu_available()
+else:
+    is_cuda_available = False
+    is_npu_available = False
 
 
 def get_visible_devices_keyword() -> str:
@@ -57,6 +66,8 @@ def get_torch_device() -> any:
     Returns:
         module: The corresponding torch device namespace, or torch.cuda if not found.
     """
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("torch is required to get torch device")
     device_name = get_device_name()
     try:
         return getattr(torch, device_name)

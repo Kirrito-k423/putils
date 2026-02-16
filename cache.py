@@ -1,7 +1,13 @@
 import os
 import hashlib
-import torch
 from contextlib import contextmanager
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
 
 # cache 案例
 # cache = RolloutCache(
@@ -54,7 +60,7 @@ class RolloutCache:
         m = hashlib.sha1()
 
         for arg in args:
-            if torch.is_tensor(arg):
+            if TORCH_AVAILABLE and torch.is_tensor(arg):
                 m.update(str(arg.shape).encode())
                 m.update(str(arg.dtype).encode())
                 m.update(str(arg.device.type).encode())
@@ -81,12 +87,16 @@ class RolloutCache:
         return os.path.join(self.cache_dir, f"{key}.pt")
 
     def load(self, key):
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("torch is required to load cache")
         path = self._cache_path(key)
         if os.path.exists(path):
             return torch.load(path, map_location="cpu")
         return None
 
     def save(self, key, value):
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("torch is required to save cache")
         try:
             path = self._cache_path(key)
             torch.save(value, path)
@@ -111,7 +121,7 @@ def rollout_cache(cache: RolloutCache, *inputs):
     yield key
 
 def to_cpu_detached(obj):
-    if torch.is_tensor(obj):
+    if TORCH_AVAILABLE and torch.is_tensor(obj):
         return obj.detach().cpu()
 
     elif isinstance(obj, dict):

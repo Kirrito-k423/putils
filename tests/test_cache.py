@@ -5,6 +5,9 @@ import shutil
 import pytest
 from unittest.mock import patch, MagicMock
 
+# Import cache module to check torch availability
+from cache import TORCH_AVAILABLE
+
 
 class TestRolloutCache:
     """Test RolloutCache class."""
@@ -60,6 +63,7 @@ class TestRolloutCache:
         
         assert hash1 != hash2
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('cache.torch')
     def test_hash_inputs_with_tensors(self, mock_torch):
         """Test _hash_inputs with tensor arguments."""
@@ -104,6 +108,7 @@ class TestCacheLoadSave:
         
         assert result is None
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('cache.torch')
     def test_save_and_load(self, mock_torch, temp_cache_dir):
         """Test saving and loading cached data."""
@@ -138,6 +143,7 @@ class TestRolloutCacheContextManager:
         with rollout_cache(cache, "input1", "input2") as result:
             assert result is None
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('cache.torch')
     def test_rollout_cache_miss(self, mock_torch, temp_cache_dir):
         """Test context manager on cache miss."""
@@ -192,6 +198,7 @@ class TestToCpuDetached:
         assert result == input_tuple
         assert isinstance(result, tuple)
 
+    @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
     @patch('cache.torch')
     def test_to_cpu_detached_with_tensor(self, mock_torch):
         """Test to_cpu_detached with tensor."""
