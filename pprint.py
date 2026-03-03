@@ -4,7 +4,11 @@ import torch.distributed
 import hashlib
 import os
 import functools
-from .write2file import log2file
+try:
+    from .write2file import log2file
+except ImportError:
+    # 当作为独立模块被导入时（如被标准库pdb导入）
+    from write2file import log2file
 
 def log_or_print(content):
     if os.getenv("log_tag", "") != "":
