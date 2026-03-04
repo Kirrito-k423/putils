@@ -14,6 +14,9 @@ Usage:
 推荐:（全量PID采集，过于频繁会导致性能劣化3+倍）
     python python_stack_sniffer.py -i 60 -o stack_trace.json --autosave-interval 60 --npu-usage --cpu-mem-usage --all-thread
 
+调试模式（抓取所有NPU进程，包括小内存进程如rayWorkerDict）：
+    python python_stack_sniffer.py -i 2 -o stack_trace.json --autosave-interval 10 --npu-usage --cpu-mem-usage --all-thread --debug-pid-discovery
+
 使用场景示例：
     # 不传pid：自动从npu-smi info抓取所有进程pid
     python python_stack_sniffer.py -i 0.2 -d 10 -o trace.json
@@ -50,7 +53,8 @@ Usage:
     * 当 py-spy 采集失败时，如果检测到对应 pid 已不存在（os.kill(pid, 0) -> ProcessLookupError），就把该 pid 从跟踪列表移除，并立刻关闭该 pid 的 open stacks，后续不再跟踪。
     * 如果手工指定的 pid list 全部都失效（运行中被移除到空列表，或启动前就都不存在），会保存最后的 JSON（启动前全失效则保存空 traceEvents），程序自动结束。
 * 针对“不指定 pid（走 npu-smi info 自动发现）”场景：
-    * npu-smi info PID 列表 查询时，默认MIN_HBM_USAGE_MB以下的任务为过滤项，不纳入监控。
+    * npu-smi info PID 列表 查询时，默认 --min-hbm-usage-mb (5000MB) 以下的任务为过滤项，不纳入监控。
+    * 使用 --debug-pid-discovery 可禁用 HBM 过滤，抓取所有 NPU 进程（适合调试 rayWorkerDict 等小内存进程）。
     * npu-smi info PID 列表为空：每 5s 刷新一次；如果连续 180s 都为空，自动结束并在 finally 保存最后 JSON。
     * npu-smi info PID 列表非空：每 30s 刷新一次，把新出现的 PID 加入监控；同时把消失的 PID 从监控中移除并关闭其 open stacks，避免遗漏/脏数据。
     * 运行中如果某个 PID 退出导致采集失败，也会自动停止跟踪该 PID（不再仅限手工 pid list）。
@@ -70,7 +74,9 @@ import select
 from typing import List, Dict, Any, Optional, Tuple
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -81,14 +87,14 @@ def _ensure_output_log_file_handler(output_path: str) -> str:
     for h in list(logger.handlers):
         if isinstance(h, logging.FileHandler):
             try:
-                if os.path.abspath(getattr(h, 'baseFilename', '')) == abs_log_path:
+                if os.path.abspath(getattr(h, "baseFilename", "")) == abs_log_path:
                     return log_path
             except Exception:
                 pass
 
-    fh = logging.FileHandler(log_path, encoding='utf-8')
+    fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(fh)
     return log_path
 
@@ -123,7 +129,9 @@ def _format_timing_summary(stats: Dict[str, Dict[str, float]]) -> List[str]:
         avg_ms = (total_s * 1000.0) / float(count)
         max_ms = float(st.get("max_s", 0.0)) * 1000.0
         min_ms = float(st.get("min_s", 0.0)) * 1000.0
-        lines.append(f"{name}: count={count} avg={avg_ms:.2f}ms min={min_ms:.2f}ms max={max_ms:.2f}ms total={total_s:.3f}s")
+        lines.append(
+            f"{name}: count={count} avg={avg_ms:.2f}ms min={min_ms:.2f}ms max={max_ms:.2f}ms total={total_s:.3f}s"
+        )
     return lines
 
 
@@ -131,7 +139,9 @@ def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
     dir_name = os.path.dirname(os.path.abspath(file_path)) or "."
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=dir_name, delete=False) as tf:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=dir_name, delete=False
+        ) as tf:
             tmp_path = tf.name
             json.dump(data, tf, indent=indent)
             tf.flush()
@@ -147,15 +157,14 @@ def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
 
 def _format_abs_time(start_wall_time_s: float, ts_us: int) -> str:
     abs_s = float(start_wall_time_s) + (float(ts_us) / 1000000.0)
-    return time.strftime('%Y-%m-%d %H:%M', time.localtime(abs_s))
-
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(abs_s))
 
 
 def _make_time_tagged_path(file_path: str, ts: Optional[float] = None) -> str:
     if ts is None:
         ts = time.time()
 
-    tag_base = time.strftime('%Y%m%d_%H%M%S', time.localtime(ts))
+    tag_base = time.strftime("%Y%m%d_%H%M%S", time.localtime(ts))
     ms = int((ts - int(ts)) * 1000)
     tag = f"{tag_base}_{ms:03d}"
 
@@ -173,69 +182,108 @@ def _make_time_tagged_path(file_path: str, ts: Optional[float] = None) -> str:
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Python Stack Sniffer for Chrome Tracing')
+    parser = argparse.ArgumentParser(
+        description="Python Stack Sniffer for Chrome Tracing"
+    )
     parser.add_argument(
-        '-p',
-        '--pid',
-        dest='pids',
-        action='append',
+        "-p",
+        "--pid",
+        dest="pids",
+        action="append",
         required=False,
-        help='Process ID list. Repeatable (-p 1 -p 2) or comma-separated (-p 1,2). If omitted, uses `npu-smi info` to discover PIDs.',
+        help="Process ID list. Repeatable (-p 1 -p 2) or comma-separated (-p 1,2). If omitted, uses `npu-smi info` to discover PIDs.",
     )
-    parser.add_argument('-i', '--interval', type=float, default=0.1, help='Sampling interval in seconds')
-    parser.add_argument('-o', '--output', type=str, default='stack_trace.json', help='Output JSON file path')
-    parser.add_argument('-d', '--duration', type=float, help='Duration to run in seconds (optional)')
-    parser.add_argument('--autosave-interval', type=float, default=0.0, help='Auto-save interval in seconds (0 to disable)')
-    parser.add_argument('--autosave-output', type=str, default=None, help='Auto-save JSON file path (default: same as --output)')
     parser.add_argument(
-        '--autosave-snapshot-interval',
+        "-i", "--interval", type=float, default=0.1, help="Sampling interval in seconds"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default="stack_trace.json",
+        help="Output JSON file path",
+    )
+    parser.add_argument(
+        "-d", "--duration", type=float, help="Duration to run in seconds (optional)"
+    )
+    parser.add_argument(
+        "--autosave-interval",
         type=float,
-        default=7200.0,
-        help='Auto-save snapshot interval in seconds (0 to disable). Snapshot file names include a time tag.',
+        default=0.0,
+        help="Auto-save interval in seconds (0 to disable)",
     )
     parser.add_argument(
-        '--autosave-snapshot-output',
+        "--autosave-output",
         type=str,
         default=None,
-        help='Auto-save snapshot base JSON file path (default: same as --output)',
-    )
-    parser.add_argument('--all-threads', action='store_true', help='Capture all threads (default: only MainThread)')
-    parser.add_argument(
-        '--npu-usage',
-        dest='npu_usage',
-        action='store_true',
-        help='Sample `npu-smi info -t usages` metrics (Aicore Usage Rate(%) / HBM Usage Rate(%)) and record into output JSON',
+        help="Auto-save JSON file path (default: same as --output)",
     )
     parser.add_argument(
-        '--npu-aicore-usage',
-        dest='npu_usage',
-        action='store_true',
-        help='Alias of --npu-usage',
+        "--autosave-snapshot-interval",
+        type=float,
+        default=7200.0,
+        help="Auto-save snapshot interval in seconds (0 to disable). Snapshot file names include a time tag.",
     )
     parser.add_argument(
-        '--npu-smi-refresh-interval',
+        "--autosave-snapshot-output",
+        type=str,
+        default=None,
+        help="Auto-save snapshot base JSON file path (default: same as --output)",
+    )
+    parser.add_argument(
+        "--all-threads",
+        action="store_true",
+        help="Capture all threads (default: only MainThread)",
+    )
+    parser.add_argument(
+        "--npu-usage",
+        dest="npu_usage",
+        action="store_true",
+        help="Sample `npu-smi info -t usages` metrics (Aicore Usage Rate(%%) / HBM Usage Rate(%%)) and record into output JSON",
+    )
+    parser.add_argument(
+        "--npu-aicore-usage",
+        dest="npu_usage",
+        action="store_true",
+        help="Alias of --npu-usage",
+    )
+    parser.add_argument(
+        "--npu-smi-refresh-interval",
         type=int,
         default=1,
-        help='Refresh interval passed to `npu-smi info -t usages -i <N>` (seconds)',
+        help="Refresh interval passed to `npu-smi info -t usages -i <N>` (seconds)",
     )
     parser.add_argument(
-        '--npu-smi-timeout',
+        "--npu-smi-timeout",
         type=float,
         default=2.0,
-        help='Timeout in seconds for each npu-smi sampling attempt',
+        help="Timeout in seconds for each npu-smi sampling attempt",
     )
     parser.add_argument(
-        '--cpu-mem-usage',
-        action='store_true',
-        help='Sample `free -b` memory metrics and record into output JSON',
+        "--cpu-mem-usage",
+        action="store_true",
+        help="Sample `free -b` memory metrics and record into output JSON",
     )
     parser.add_argument(
-        '--cpu-mem-timeout',
+        "--cpu-mem-timeout",
         type=float,
         default=1.0,
-        help='Timeout in seconds for each free sampling attempt',
+        help="Timeout in seconds for each free sampling attempt",
     )
-    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
+    parser.add_argument(
+        "--debug-pid-discovery",
+        action="store_true",
+        help="Debug mode: include all PIDs from npu-smi info regardless of HBM usage (sets min HBM to 0)",
+    )
+    parser.add_argument(
+        "--min-hbm-usage-mb",
+        type=int,
+        default=5000,
+        help="Minimum HBM usage (MB) to include PID from npu-smi info. Default: 5000. Set to 0 to include all.",
+    )
     return parser.parse_args()
 
 
@@ -244,7 +292,7 @@ def _normalize_pids(pid_args: List[str]) -> List[int]:
     seen = set()
 
     for item in pid_args:
-        for part in item.split(','):
+        for part in item.split(","):
             part = part.strip()
             if not part:
                 continue
@@ -254,7 +302,7 @@ def _normalize_pids(pid_args: List[str]) -> List[int]:
                 seen.add(pid)
 
     if not pids:
-        raise ValueError('empty pid list')
+        raise ValueError("empty pid list")
 
     return pids
 
@@ -271,30 +319,30 @@ def _pid_exists(pid: int) -> bool:
         return True
 
 
-def _filter_stack_data(stack_data: Dict[str, Any], main_thread_only: bool) -> Dict[str, Any]:
+def _filter_stack_data(
+    stack_data: Dict[str, Any], main_thread_only: bool
+) -> Dict[str, Any]:
     if not main_thread_only:
         return stack_data
 
-    threads = stack_data.get('threads') or []
-    main_threads = [t for t in threads if (t.get('name') or '') == 'MainThread']
+    threads = stack_data.get("threads") or []
+    main_threads = [t for t in threads if (t.get("name") or "") == "MainThread"]
     if main_threads:
         return {"threads": main_threads}
 
     return stack_data
 
 
-def _get_pids_from_npu_smi_info() -> List[int]:
-    MIN_HBM_USAGE_MB = 5000
-
+def _get_pids_from_npu_smi_info(min_hbm_usage_mb: int = 5000) -> List[int]:
     try:
         result = subprocess.run(
-            ['npu-smi', 'info'],
+            ["npu-smi", "info"],
             capture_output=True,
             text=True,
             check=True,
         )
     except FileNotFoundError:
-        logger.error('npu-smi not found; please provide -p/--pid explicitly')
+        logger.error("npu-smi not found; please provide -p/--pid explicitly")
         return []
     except subprocess.CalledProcessError as e:
         logger.error(f"npu-smi info failed: {(e.stderr or '').strip()}")
@@ -308,7 +356,7 @@ def _get_pids_from_npu_smi_info() -> List[int]:
         return None
 
     def _parse_int(cell: str) -> Optional[int]:
-        m = re.search(r'(\d+)', cell)
+        m = re.search(r"(\d+)", cell)
         return int(m.group(1)) if m else None
 
     pids: List[int] = []
@@ -317,32 +365,43 @@ def _get_pids_from_npu_smi_info() -> List[int]:
     pid_col: Optional[int] = None
     mem_col: Optional[int] = None
 
-    for raw_line in (result.stdout or '').splitlines():
-        line = raw_line.rstrip('\n')
+    for raw_line in (result.stdout or "").splitlines():
+        line = raw_line.rstrip("\n")
         lower = line.lower()
-        if re.search(r'process\s*id', lower) and re.search(r'process\s*name', lower):
+        if re.search(r"process\s*id", lower) and re.search(r"process\s*name", lower):
             in_process_table = True
-            if '|' in line:
-                header_cols = [p.strip().lower() for p in line.strip().strip('|').split('|')]
-                pid_col = _find_col_index(header_cols, [r'\bpid\b', r'process\s*id'])
+            if "|" in line:
+                header_cols = [
+                    p.strip().lower() for p in line.strip().strip("|").split("|")
+                ]
+                pid_col = _find_col_index(header_cols, [r"\bpid\b", r"process\s*id"])
                 mem_col = _find_col_index(
                     header_cols,
-                    [r'hbm.*usage', r'memory.*usage', r'\busage\b.*\bmb\b', r'\bmb\b.*\busage\b'],
+                    [
+                        r"hbm.*usage",
+                        r"memory.*usage",
+                        r"\busage\b.*\bmb\b",
+                        r"\bmb\b.*\busage\b",
+                    ],
                 )
             continue
         if not in_process_table:
             continue
-        if line.startswith('+'):
+        if line.startswith("+"):
             continue
-        if not line.strip().startswith('|'):
+        if not line.strip().startswith("|"):
             continue
 
-        parts = [p.strip() for p in line.strip().strip('|').split('|')]
+        parts = [p.strip() for p in line.strip().strip("|").split("|")]
         if len(parts) < 3:
             continue
 
         pid_str: Optional[str] = None
-        if pid_col is not None and 0 <= pid_col < len(parts) and parts[pid_col].isdigit():
+        if (
+            pid_col is not None
+            and 0 <= pid_col < len(parts)
+            and parts[pid_col].isdigit()
+        ):
             pid_str = parts[pid_col]
         else:
             for token in parts[1:]:
@@ -358,7 +417,7 @@ def _get_pids_from_npu_smi_info() -> List[int]:
         elif parts:
             mem_mb = _parse_int(parts[-1])
 
-        if mem_mb is not None and mem_mb < MIN_HBM_USAGE_MB:
+        if min_hbm_usage_mb > 0 and mem_mb is not None and mem_mb < min_hbm_usage_mb:
             continue
 
         pid = int(pid_str)
@@ -369,8 +428,10 @@ def _get_pids_from_npu_smi_info() -> List[int]:
     return pids
 
 
-def _sample_npu_usage_rates(refresh_interval_s: int, timeout_s: float) -> Optional[Dict[str, int]]:
-    cmd = ['npu-smi', 'info', '-t', 'usages', '-i', str(int(refresh_interval_s))]
+def _sample_npu_usage_rates(
+    refresh_interval_s: int, timeout_s: float
+) -> Optional[Dict[str, int]]:
+    cmd = ["npu-smi", "info", "-t", "usages", "-i", str(int(refresh_interval_s))]
 
     proc = subprocess.Popen(
         cmd,
@@ -399,20 +460,20 @@ def _sample_npu_usage_rates(refresh_interval_s: int, timeout_s: float) -> Option
 
             lower = line.lower()
             key: Optional[str] = None
-            if 'aicore usage rate' in lower:
-                key = 'aicore'
-            elif 'hbm usage rate' in lower:
-                key = 'hbm'
+            if "aicore usage rate" in lower:
+                key = "aicore"
+            elif "hbm usage rate" in lower:
+                key = "hbm"
 
             if key is None or key in found:
                 continue
 
-            m = re.search(r':\s*(\d+)\b', line)
+            m = re.search(r":\s*(\d+)\b", line)
             if not m:
                 continue
 
             found[key] = int(m.group(1))
-            if 'aicore' in found and 'hbm' in found:
+            if "aicore" in found and "hbm" in found:
                 break
 
         return found or None
@@ -432,18 +493,18 @@ def _sample_npu_usage_rates(refresh_interval_s: int, timeout_s: float) -> Option
 def _sample_cpu_mem_stats(timeout_s: float) -> Optional[Dict[str, int]]:
     timeout = max(float(timeout_s or 0.0), 0.1)
     result = subprocess.run(
-        ['free', '-b'],
+        ["free", "-b"],
         capture_output=True,
         text=True,
         check=True,
         timeout=timeout,
     )
 
-    for raw_line in (result.stdout or '').splitlines():
+    for raw_line in (result.stdout or "").splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if not (line.startswith('Mem:') or line.lower().startswith('mem:')):
+        if not (line.startswith("Mem:") or line.lower().startswith("mem:")):
             continue
 
         parts = line.split()
@@ -459,13 +520,13 @@ def _sample_cpu_mem_stats(timeout_s: float) -> Optional[Dict[str, int]]:
 
         usage_rate = int(round((used * 100.0) / total)) if total > 0 else 0
         return {
-            'total_bytes': total,
-            'used_bytes': used,
-            'free_bytes': free,
-            'shared_bytes': shared,
-            'buff_cache_bytes': buff_cache,
-            'available_bytes': available,
-            'usage_rate': usage_rate,
+            "total_bytes": total,
+            "used_bytes": used,
+            "free_bytes": free,
+            "shared_bytes": shared,
+            "buff_cache_bytes": buff_cache,
+            "available_bytes": available,
+            "usage_rate": usage_rate,
         }
 
     return None
@@ -488,8 +549,8 @@ def _run_pyspy_dump(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
 def get_stack_traces(pid: int) -> Tuple[str, Optional[str]]:
     """Capture stack traces using py-spy dump (text output)."""
     cmds = [
-        ['py-spy', 'dump', '--pid', str(pid), "--native"],
-        ['py-spy', 'dump', '-p', str(pid)],
+        ["py-spy", "dump", "--pid", str(pid), "--native"],
+        ["py-spy", "dump", "-p", str(pid)],
     ]
 
     last_err: Optional[str] = None
@@ -502,12 +563,14 @@ def get_stack_traces(pid: int) -> Tuple[str, Optional[str]]:
     return "", last_err
 
 
-_THREAD_HEADER_RE = re.compile(r'^Thread\s+(?P<rest>.+?)\s*$')
+_THREAD_HEADER_RE = re.compile(r"^Thread\s+(?P<rest>.+?)\s*$")
 _FILE_FRAME_RE = re.compile(
     r'^\s*File\s+"(?P<file>[^"]+)",\s+line\s+(?P<line>\d+),\s+in\s+(?P<func>.+?)\s*$'
 )
-_SIMPLE_FRAME_RE = re.compile(r'^\s*(?P<func>.+?)\s+\((?P<file>.+?):(?P<line>\d+)\)\s*$')
-_NATIVE_FRAME_RE = re.compile(r'^\s*\[native\]\s+(?P<func>.+?)\s*$')
+_SIMPLE_FRAME_RE = re.compile(
+    r"^\s*(?P<func>.+?)\s+\((?P<file>.+?):(?P<line>\d+)\)\s*$"
+)
+_NATIVE_FRAME_RE = re.compile(r"^\s*\[native\]\s+(?P<func>.+?)\s*$")
 
 
 def _parse_thread_header(rest: str) -> Tuple[int, str]:
@@ -582,7 +645,9 @@ def parse_pyspy_output(pyspy_output: str) -> Dict[str, Any]:
 
         m_nf = _NATIVE_FRAME_RE.match(line)
         if m_nf:
-            current["stack"].append({"name": m_nf.group("func"), "filename": "[native]", "lineno": 0})
+            current["stack"].append(
+                {"name": m_nf.group("func"), "filename": "[native]", "lineno": 0}
+            )
             continue
 
     if current is not None:
@@ -691,7 +756,9 @@ def convert_to_chrome_tracing(
     return events
 
 
-def close_open_stacks(pid: int, ts_us: int, abs_time: str, open_stacks: Dict[int, List[str]]) -> List[Dict[str, Any]]:
+def close_open_stacks(
+    pid: int, ts_us: int, abs_time: str, open_stacks: Dict[int, List[str]]
+) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for thread_id, names in list(open_stacks.items()):
         for i in range(len(names) - 1, -1, -1):
@@ -707,7 +774,6 @@ def close_open_stacks(pid: int, ts_us: int, abs_time: str, open_stacks: Dict[int
             )
     open_stacks.clear()
     return events
-
 
 
 def main():
@@ -726,7 +792,8 @@ def main():
     if args.pids:
         pids = _normalize_pids(args.pids)
     else:
-        pids = _get_pids_from_npu_smi_info()
+        min_hbm = 0 if args.debug_pid_discovery else args.min_hbm_usage_mb
+        pids = _get_pids_from_npu_smi_info(min_hbm)
 
     if manual_pid_list:
         alive: List[int] = []
@@ -738,7 +805,9 @@ def main():
                 missing.append(pid)
 
         if missing:
-            logger.warning(f"Specified PIDs not running and will be skipped: {','.join(map(str, missing))}")
+            logger.warning(
+                f"Specified PIDs not running and will be skipped: {','.join(map(str, missing))}"
+            )
 
         pids = alive
         if not pids:
@@ -747,17 +816,25 @@ def main():
                 "displayTimeUnit": "us",
             }
             _atomic_write_json(args.output, chrome_tracing_data, indent=2)
-            logger.info("All specified PIDs are not running; saved empty trace and exiting")
+            logger.info(
+                "All specified PIDs are not running; saved empty trace and exiting"
+            )
             logger.info(f"Chrome Tracing file saved to: {args.output}")
             return
 
     main_thread_only = not args.all_threads
 
     if pids:
-        logger.info(f"Starting Python Stack Sniffer for PIDs: {','.join(map(str, pids))}")
+        logger.info(
+            f"Starting Python Stack Sniffer for PIDs: {','.join(map(str, pids))}"
+        )
     else:
-        logger.info("Starting Python Stack Sniffer with auto PID discovery from `npu-smi info` (no initial PIDs)")
-        logger.info("PID discovery: refresh every 5s when empty; exit if empty for 180s; refresh every 30s when non-empty")
+        logger.info(
+            "Starting Python Stack Sniffer with auto PID discovery from `npu-smi info` (no initial PIDs)"
+        )
+        logger.info(
+            "PID discovery: refresh every 5s when empty; exit if empty for 180s; refresh every 30s when non-empty"
+        )
 
     logger.info(f"Sampling interval: {args.interval} seconds")
     logger.info(f"Output file: {args.output}")
@@ -766,7 +843,9 @@ def main():
     autosave_interval_s = float(args.autosave_interval or 0.0)
     autosave_output = args.autosave_output or args.output
     if autosave_interval_s > 0:
-        logger.info(f"Auto-save: every {autosave_interval_s} seconds -> {autosave_output}")
+        logger.info(
+            f"Auto-save: every {autosave_interval_s} seconds -> {autosave_output}"
+        )
 
     autosave_snapshot_interval_s = float(args.autosave_snapshot_interval or 0.0)
     autosave_snapshot_output = args.autosave_snapshot_output or args.output
@@ -841,7 +920,7 @@ def main():
                 "args": {"name": f"python pid {pid}"},
             }
         )
-    
+
     for ev in chrome_tracing_data.get("traceEvents", []):
         ev_args = ev.get("args")
         if not isinstance(ev_args, dict):
@@ -865,10 +944,13 @@ def main():
 
             stop_capture = False
             if not manual_pid_list:
-                refresh_interval_s = AUTO_PID_REFRESH_WITH_PIDS_S if pids else AUTO_PID_REFRESH_NO_PIDS_S
+                refresh_interval_s = (
+                    AUTO_PID_REFRESH_WITH_PIDS_S if pids else AUTO_PID_REFRESH_NO_PIDS_S
+                )
                 if (now - last_pid_refresh_time) >= refresh_interval_s:
                     t0 = time.monotonic()
-                    discovered = _get_pids_from_npu_smi_info()
+                    min_hbm = 0 if args.debug_pid_discovery else args.min_hbm_usage_mb
+                    discovered = _get_pids_from_npu_smi_info(min_hbm)
                     dt = time.monotonic() - t0
                     _timing_add(timing_stats, "npu_smi_info_discover", dt)
                     logger.info(
@@ -885,11 +967,15 @@ def main():
                     for rpid in removed:
                         st = states.pop(rpid, None)
                         if st:
-                            events = close_open_stacks(rpid, ts_us, abs_time, st["open_stacks"])
+                            events = close_open_stacks(
+                                rpid, ts_us, abs_time, st["open_stacks"]
+                            )
                             chrome_tracing_data["traceEvents"].extend(events)
 
                     if removed:
-                        logger.info(f"Auto PID refresh: removed {','.join(map(str, removed))}")
+                        logger.info(
+                            f"Auto PID refresh: removed {','.join(map(str, removed))}"
+                        )
 
                     for apid in added:
                         states[apid] = {
@@ -903,12 +989,17 @@ def main():
                                 "ph": "M",
                                 "ts": 0,
                                 "pid": apid,
-                                "args": {"name": f"python pid {apid}", "abs_time": abs_time},
+                                "args": {
+                                    "name": f"python pid {apid}",
+                                    "abs_time": abs_time,
+                                },
                             }
                         )
 
                     if added:
-                        logger.info(f"Auto PID refresh: added {','.join(map(str, added))}")
+                        logger.info(
+                            f"Auto PID refresh: added {','.join(map(str, added))}"
+                        )
 
                     pids = sorted(new_set)
 
@@ -929,10 +1020,14 @@ def main():
             if collect_npu_usage and not npu_smi_disabled:
                 try:
                     t0 = time.monotonic()
-                    rates = _sample_npu_usage_rates(args.npu_smi_refresh_interval, args.npu_smi_timeout)
-                    _timing_add(timing_stats, "npu_smi_usages_sample", time.monotonic() - t0)
+                    rates = _sample_npu_usage_rates(
+                        args.npu_smi_refresh_interval, args.npu_smi_timeout
+                    )
+                    _timing_add(
+                        timing_stats, "npu_smi_usages_sample", time.monotonic() - t0
+                    )
                 except FileNotFoundError:
-                    logger.error('npu-smi not found; disable --npu-usage')
+                    logger.error("npu-smi not found; disable --npu-usage")
                     npu_smi_disabled = True
                     rates = None
 
@@ -948,9 +1043,9 @@ def main():
                             "args": {"aicore": aicore, "abs_time": abs_time},
                         }
                     )
-                    chrome_tracing_data.setdefault("npu", {}).setdefault("aicore_usage_rate", []).append(
-                        {"ts_us": ts_us, "value": aicore}
-                    )
+                    chrome_tracing_data.setdefault("npu", {}).setdefault(
+                        "aicore_usage_rate", []
+                    ).append({"ts_us": ts_us, "value": aicore})
 
                 if rates and ("hbm" in rates):
                     hbm = int(rates["hbm"])
@@ -964,9 +1059,9 @@ def main():
                             "args": {"hbm": hbm, "abs_time": abs_time},
                         }
                     )
-                    chrome_tracing_data.setdefault("npu", {}).setdefault("hbm_usage_rate", []).append(
-                        {"ts_us": ts_us, "value": hbm}
-                    )
+                    chrome_tracing_data.setdefault("npu", {}).setdefault(
+                        "hbm_usage_rate", []
+                    ).append({"ts_us": ts_us, "value": hbm})
 
             if collect_cpu_mem_usage and not cpu_mem_disabled:
                 try:
@@ -974,7 +1069,7 @@ def main():
                     mem = _sample_cpu_mem_stats(args.cpu_mem_timeout)
                     _timing_add(timing_stats, "free_mem_sample", time.monotonic() - t0)
                 except FileNotFoundError:
-                    logger.error('free not found; disable --cpu-mem-usage')
+                    logger.error("free not found; disable --cpu-mem-usage")
                     cpu_mem_disabled = True
                     mem = None
                 except subprocess.TimeoutExpired:
@@ -999,9 +1094,9 @@ def main():
                             },
                         }
                     )
-                    chrome_tracing_data.setdefault("cpu", {}).setdefault("mem", []).append(
-                        {"ts_us": ts_us, **mem}
-                    )
+                    chrome_tracing_data.setdefault("cpu", {}).setdefault(
+                        "mem", []
+                    ).append({"ts_us": ts_us, **mem})
 
             for pid in list(pids):
                 t0 = time.monotonic()
@@ -1020,7 +1115,9 @@ def main():
                     if not _pid_exists(pid):
                         st = states.pop(pid, None)
                         if st:
-                            events = close_open_stacks(pid, ts_us, abs_time, st["open_stacks"])
+                            events = close_open_stacks(
+                                pid, ts_us, abs_time, st["open_stacks"]
+                            )
                             chrome_tracing_data["traceEvents"].extend(events)
 
                         try:
@@ -1032,7 +1129,9 @@ def main():
 
                         if manual_pid_list:
                             if not pids:
-                                logger.info("All specified PIDs have exited; stopping capture")
+                                logger.info(
+                                    "All specified PIDs have exited; stopping capture"
+                                )
                                 stop_capture = True
                                 break
                         else:
@@ -1061,17 +1160,25 @@ def main():
             if stop_capture:
                 break
 
-            if autosave_interval_s > 0 and (now - last_autosave_time) >= autosave_interval_s:
+            if (
+                autosave_interval_s > 0
+                and (now - last_autosave_time) >= autosave_interval_s
+            ):
                 t0 = time.monotonic()
                 _atomic_write_json(autosave_output, chrome_tracing_data, indent=2)
                 _timing_add(timing_stats, "autosave_write_json", time.monotonic() - t0)
                 last_autosave_time = now
 
-            if autosave_snapshot_interval_s > 0 and (now - last_autosave_snapshot_time) >= autosave_snapshot_interval_s:
+            if (
+                autosave_snapshot_interval_s > 0
+                and (now - last_autosave_snapshot_time) >= autosave_snapshot_interval_s
+            ):
                 snapshot_path = _make_time_tagged_path(autosave_snapshot_output)
                 t0 = time.monotonic()
                 _atomic_write_json(snapshot_path, chrome_tracing_data, indent=2)
-                _timing_add(timing_stats, "autosave_snapshot_write_json", time.monotonic() - t0)
+                _timing_add(
+                    timing_stats, "autosave_snapshot_write_json", time.monotonic() - t0
+                )
                 last_autosave_snapshot_time = now
 
             if (not manual_pid_list) and (not pids):
@@ -1082,13 +1189,15 @@ def main():
             iter_dt = time.monotonic() - iter_t0
             _timing_add(timing_stats, "loop_total", iter_dt)
             if iter_dt >= 2.0:
-                logger.info(f"timing loop_total: {iter_dt * 1000.0:.2f}ms pids={len(pids)}")
+                logger.info(
+                    f"timing loop_total: {iter_dt * 1000.0:.2f}ms pids={len(pids)}"
+                )
 
             sleep_s = next_tick - time.monotonic()
             if sleep_s > 0:
                 _timing_add(timing_stats, "loop_sleep", sleep_s)
                 time.sleep(sleep_s)
-            
+
     except KeyboardInterrupt:
         logger.info("Stopped by user")
     except Exception as e:
