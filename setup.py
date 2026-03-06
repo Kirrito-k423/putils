@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 setup(
     name="putils",
@@ -6,7 +6,7 @@ setup(
     description="Development AI model utilities",
     author="Kirrito-k423",
     url="https://github.com/Kirrito-k423/putils",
-    packages=find_packages(),
+    packages=["putils"],
     install_requires=[
         "portalocker",
         "debugpy"
