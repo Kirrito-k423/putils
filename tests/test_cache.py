@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 # Import cache module to check torch availability
-from cache import TORCH_AVAILABLE
+from putils.cache import TORCH_AVAILABLE
 
 
 class TestRolloutCache:
@@ -21,7 +21,7 @@ class TestRolloutCache:
 
     def test_cache_initialization(self, temp_cache_dir):
         """Test RolloutCache initializes correctly."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache(temp_cache_dir, enabled=True, force_recompute=False)
         
@@ -32,7 +32,7 @@ class TestRolloutCache:
 
     def test_cache_disabled(self):
         """Test cache behavior when disabled."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache("/tmp/test_cache", enabled=False)
         
@@ -40,7 +40,7 @@ class TestRolloutCache:
 
     def test_hash_inputs_with_strings(self):
         """Test _hash_inputs with string arguments."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache("/tmp/test", enabled=True)
         
@@ -54,7 +54,7 @@ class TestRolloutCache:
 
     def test_hash_inputs_different_values(self):
         """Test _hash_inputs produces different hashes for different values."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache("/tmp/test", enabled=True)
         
@@ -64,10 +64,10 @@ class TestRolloutCache:
         assert hash1 != hash2
 
     @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
-    @patch('cache.torch')
+    @patch('putils.cache.torch')
     def test_hash_inputs_with_tensors(self, mock_torch):
         """Test _hash_inputs with tensor arguments."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache("/tmp/test", enabled=True)
         
@@ -100,7 +100,7 @@ class TestCacheLoadSave:
 
     def test_load_nonexistent_key(self, temp_cache_dir):
         """Test loading non-existent cache key returns None."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache(temp_cache_dir, enabled=True)
         
@@ -109,10 +109,10 @@ class TestCacheLoadSave:
         assert result is None
 
     @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
-    @patch('cache.torch')
+    @patch('putils.cache.torch')
     def test_save_and_load(self, mock_torch, temp_cache_dir):
         """Test saving and loading cached data."""
-        from cache import RolloutCache
+        from putils.cache import RolloutCache
         
         cache = RolloutCache(temp_cache_dir, enabled=True)
         
@@ -136,7 +136,7 @@ class TestRolloutCacheContextManager:
 
     def test_rollout_cache_disabled(self):
         """Test context manager when cache is disabled."""
-        from cache import rollout_cache, RolloutCache
+        from putils.cache import rollout_cache, RolloutCache
         
         cache = RolloutCache("/tmp/test", enabled=False)
         
@@ -144,10 +144,10 @@ class TestRolloutCacheContextManager:
             assert result is None
 
     @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
-    @patch('cache.torch')
+    @patch('putils.cache.torch')
     def test_rollout_cache_miss(self, mock_torch, temp_cache_dir):
         """Test context manager on cache miss."""
-        from cache import rollout_cache, RolloutCache
+        from putils.cache import rollout_cache, RolloutCache
         
         cache = RolloutCache(temp_cache_dir, enabled=True, force_recompute=True)
         
@@ -161,7 +161,7 @@ class TestToCpuDetached:
 
     def test_to_cpu_detached_with_primitive(self):
         """Test to_cpu_detached with primitive types."""
-        from cache import to_cpu_detached
+        from putils.cache import to_cpu_detached
         
         assert to_cpu_detached("string") == "string"
         assert to_cpu_detached(42) == 42
@@ -170,7 +170,7 @@ class TestToCpuDetached:
 
     def test_to_cpu_detached_with_dict(self):
         """Test to_cpu_detached with dictionary."""
-        from cache import to_cpu_detached
+        from putils.cache import to_cpu_detached
         
         input_dict = {"a": 1, "b": "string", "c": None}
         result = to_cpu_detached(input_dict)
@@ -180,7 +180,7 @@ class TestToCpuDetached:
 
     def test_to_cpu_detached_with_list(self):
         """Test to_cpu_detached with list."""
-        from cache import to_cpu_detached
+        from putils.cache import to_cpu_detached
         
         input_list = [1, "string", 3.14, None]
         result = to_cpu_detached(input_list)
@@ -190,7 +190,7 @@ class TestToCpuDetached:
 
     def test_to_cpu_detached_with_tuple(self):
         """Test to_cpu_detached with tuple."""
-        from cache import to_cpu_detached
+        from putils.cache import to_cpu_detached
         
         input_tuple = (1, "string", 3.14)
         result = to_cpu_detached(input_tuple)
@@ -199,10 +199,10 @@ class TestToCpuDetached:
         assert isinstance(result, tuple)
 
     @pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
-    @patch('cache.torch')
+    @patch('putils.cache.torch')
     def test_to_cpu_detached_with_tensor(self, mock_torch):
         """Test to_cpu_detached with tensor."""
-        from cache import to_cpu_detached
+        from putils.cache import to_cpu_detached
         
         mock_tensor = MagicMock()
         mock_torch.is_tensor.return_value = True

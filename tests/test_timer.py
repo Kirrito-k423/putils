@@ -9,7 +9,7 @@ class TestTimerFunctions:
 
     def test_to_filename_safe(self):
         """Test timestamp to filename conversion."""
-        from timer import to_filename_safe
+        from putils.timer import to_filename_safe
         
         # Test basic timestamp conversion
         result = to_filename_safe("2024-01-15 14:30:45.123")
@@ -21,7 +21,7 @@ class TestTimerFunctions:
 
     def test_get_formatted_time_format(self):
         """Test get_formatted_time returns expected format."""
-        from timer import get_formatted_time
+        from putils.timer import get_formatted_time
         
         result = get_formatted_time()
         # Should be in format: "YYYY-MM-DD HH:MM:SS.mmm"
@@ -37,16 +37,16 @@ class TestTimerFunctions:
 
     def test_get_time_str(self):
         """Test get_time_str returns string."""
-        from timer import get_time_str
+        from putils.timer import get_time_str
         
         result = get_time_str()
         assert isinstance(result, str)
         assert len(result) > 0
 
-    @patch('timer.get_formatted_time')
+    @patch('putils.timer.get_formatted_time')
     def test_mprint_format(self, mock_get_time):
         """Test mprint output format."""
-        from timer import mprint
+        from putils.timer import mprint
         
         mock_get_time.return_value = "2024-01-15 14:30:45.123"
         
@@ -61,11 +61,11 @@ class TestTimerFunctions:
 class TestTimerContextManager:
     """Test timer context manager functionality."""
 
-    @patch('timer.dist')
-    @patch('timer.TIMER_VERBOSE', True)
+    @patch('putils.timer.dist')
+    @patch('putils.timer.TIMER_VERBOSE', True)
     def test_timer_context_manager_basic(self, mock_dist):
         """Test basic timer context manager execution."""
-        from timer import timer
+        from putils.timer import timer
         
         mock_dist.is_initialized.return_value = False
         
@@ -74,11 +74,11 @@ class TestTimerContextManager:
         
         # Context manager should complete without error
 
-    @patch('timer.dist')
-    @patch('timer.TIMER_VERBOSE', True)
+    @patch('putils.timer.dist')
+    @patch('putils.timer.TIMER_VERBOSE', True)
     def test_timer_with_exception(self, mock_dist):
         """Test timer handles exceptions gracefully."""
-        from timer import timer
+        from putils.timer import timer
         
         mock_dist.is_initialized.return_value = False
         
@@ -94,11 +94,11 @@ class TestTimerContextManager:
 class TestTimerDecorator:
     """Test timer decorator functionality."""
 
-    @patch('timer.dist')
-    @patch('timer.TIMER_VERBOSE', True)
+    @patch('putils.timer.dist')
+    @patch('putils.timer.TIMER_VERBOSE', True)
     def test_timer_decorator(self, mock_dist):
         """Test timer decorator on function."""
-        from timer import timer_decorator
+        from putils.timer import timer_decorator
         
         mock_dist.is_initialized.return_value = False
         
@@ -109,11 +109,11 @@ class TestTimerDecorator:
         result = sample_func()
         assert result == 42
 
-    @patch('timer.dist')
-    @patch('timer.TIMER_VERBOSE', True)
+    @patch('putils.timer.dist')
+    @patch('putils.timer.TIMER_VERBOSE', True)
     def test_timer_decorator_with_args(self, mock_dist):
         """Test timer decorator with function arguments."""
-        from timer import timer_decorator
+        from putils.timer import timer_decorator
         
         mock_dist.is_initialized.return_value = False
         
