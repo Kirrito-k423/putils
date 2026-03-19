@@ -69,6 +69,7 @@ import time
 import logging
 import re
 import os
+import shutil
 import tempfile
 import select
 from typing import List, Dict, Any, Optional, Tuple
@@ -191,7 +192,7 @@ def parse_args() -> argparse.Namespace:
         dest="pids",
         action="append",
         required=False,
-        help="Process ID list. Repeatable (-p 1 -p 2) or comma-separated (-p 1,2). If omitted, uses `npu-smi info` to discover PIDs.",
+        help="Process ID list. Repeatable (-p 1 -p 2) or comma-separated (-p 1,2). If omitted, auto-discover via `npu-smi info` (NPU) or `nvidia-smi` (GPU).",
     )
     parser.add_argument(
         "-i", "--interval", type=float, default=0.1, help="Sampling interval in seconds"
@@ -283,6 +284,23 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5000,
         help="Minimum HBM usage (MB) to include PID from npu-smi info. Default: 5000. Set to 0 to include all.",
+    )
+    parser.add_argument(
+        "--gpu-usage",
+        action="store_true",
+        help="Sample `nvidia-smi` metrics (utilization.gpu / utilization.memory) and record into output JSON",
+    )
+    parser.add_argument(
+        "--gpu-smi-timeout",
+        type=float,
+        default=2.0,
+        help="Timeout in seconds for each nvidia-smi sampling attempt",
+    )
+    parser.add_argument(
+        "--min-gpu-mem-usage-mb",
+        type=int,
+        default=0,
+        help="Minimum GPU memory usage (MB) to include PID from nvidia-smi. Default: 0.",
     )
     return parser.parse_args()
 
@@ -428,6 +446,70 @@ def _get_pids_from_npu_smi_info(min_hbm_usage_mb: int = 5000) -> List[int]:
     return pids
 
 
+def _detect_accelerator_backend() -> str:
+    if shutil.which("npu-smi"):
+        return "npu"
+    if shutil.which("nvidia-smi"):
+        return "gpu"
+    return "none"
+
+
+def _get_pids_from_nvidia_smi_info(min_gpu_mem_usage_mb: int = 0) -> List[int]:
+    cmd = [
+        "nvidia-smi",
+        "--query-compute-apps=pid,used_memory",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.error("nvidia-smi not found; please provide -p/--pid explicitly")
+        return []
+    except subprocess.CalledProcessError as e:
+        logger.error(f"nvidia-smi query compute apps failed: {(e.stderr or '').strip()}")
+        return []
+
+    pids: List[int] = []
+    seen = set()
+    for raw_line in (result.stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        parts = [p.strip() for p in line.split(",")]
+        if not parts:
+            continue
+
+        pid_str = parts[0]
+        if not pid_str.isdigit():
+            continue
+
+        mem_mb: Optional[int] = None
+        if len(parts) >= 2:
+            m = re.search(r"(\d+)", parts[1])
+            if m:
+                mem_mb = int(m.group(1))
+
+        if (
+            min_gpu_mem_usage_mb > 0
+            and mem_mb is not None
+            and mem_mb < min_gpu_mem_usage_mb
+        ):
+            continue
+
+        pid = int(pid_str)
+        if pid not in seen:
+            pids.append(pid)
+            seen.add(pid)
+
+    return pids
+
+
 def _sample_npu_usage_rates(
     refresh_interval_s: int, timeout_s: float
 ) -> Optional[Dict[str, int]]:
@@ -488,6 +570,49 @@ def _sample_npu_usage_rates(
                     proc.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
                     pass
+
+
+def _sample_gpu_usage_rates(timeout_s: float) -> Optional[Dict[str, int]]:
+    timeout = max(float(timeout_s or 0.0), 0.1)
+    cmd = [
+        "nvidia-smi",
+        "--query-gpu=utilization.gpu,utilization.memory",
+        "--format=csv,noheader,nounits",
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=timeout,
+    )
+
+    gpu_utils: List[int] = []
+    mem_utils: List[int] = []
+    for raw_line in (result.stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+
+        m_gpu = re.search(r"(\d+)", parts[0])
+        m_mem = re.search(r"(\d+)", parts[1])
+        if not m_gpu or not m_mem:
+            continue
+
+        gpu_utils.append(int(m_gpu.group(1)))
+        mem_utils.append(int(m_mem.group(1)))
+
+    if not gpu_utils or not mem_utils:
+        return None
+
+    return {
+        "gpu": max(gpu_utils),
+        "mem": max(mem_utils),
+    }
 
 
 def _sample_cpu_mem_stats(timeout_s: float) -> Optional[Dict[str, int]]:
@@ -788,12 +913,25 @@ def main():
     timing_stats: Dict[str, Dict[str, float]] = {}
 
     manual_pid_list = bool(args.pids)
+    accelerator_backend = _detect_accelerator_backend()
+    if accelerator_backend == "npu":
+        logger.info("Detected accelerator backend: NPU (npu-smi)")
+    elif accelerator_backend == "gpu":
+        logger.info("Detected accelerator backend: GPU (nvidia-smi)")
+    else:
+        logger.info("Detected accelerator backend: none")
 
     if args.pids:
         pids = _normalize_pids(args.pids)
     else:
-        min_hbm = 0 if args.debug_pid_discovery else args.min_hbm_usage_mb
-        pids = _get_pids_from_npu_smi_info(min_hbm)
+        if accelerator_backend == "npu":
+            min_hbm = 0 if args.debug_pid_discovery else args.min_hbm_usage_mb
+            pids = _get_pids_from_npu_smi_info(min_hbm)
+        elif accelerator_backend == "gpu":
+            min_gpu_mem = 0 if args.debug_pid_discovery else args.min_gpu_mem_usage_mb
+            pids = _get_pids_from_nvidia_smi_info(min_gpu_mem)
+        else:
+            pids = []
 
     if manual_pid_list:
         alive: List[int] = []
@@ -829,9 +967,18 @@ def main():
             f"Starting Python Stack Sniffer for PIDs: {','.join(map(str, pids))}"
         )
     else:
-        logger.info(
-            "Starting Python Stack Sniffer with auto PID discovery from `npu-smi info` (no initial PIDs)"
-        )
+        if accelerator_backend == "npu":
+            logger.info(
+                "Starting Python Stack Sniffer with auto PID discovery from `npu-smi info` (no initial PIDs)"
+            )
+        elif accelerator_backend == "gpu":
+            logger.info(
+                "Starting Python Stack Sniffer with auto PID discovery from `nvidia-smi` (no initial PIDs)"
+            )
+        else:
+            logger.info(
+                "Starting Python Stack Sniffer without detected accelerator tool (`npu-smi`/`nvidia-smi` not found)"
+            )
         logger.info(
             "PID discovery: refresh every 5s when empty; exit if empty for 180s; refresh every 30s when non-empty"
         )
@@ -860,6 +1007,12 @@ def main():
     }
 
     collect_npu_usage = bool(args.npu_usage)
+    if collect_npu_usage and accelerator_backend != "npu":
+        logger.warning(
+            "--npu-usage is enabled but NPU backend is not detected; disabling NPU usage sampling"
+        )
+        collect_npu_usage = False
+
     npu_smi_disabled = False
     npu_trace_pid = 0
     if collect_npu_usage:
@@ -870,6 +1023,26 @@ def main():
                 "ts": 0,
                 "pid": npu_trace_pid,
                 "args": {"name": "npu"},
+            }
+        )
+
+    collect_gpu_usage = bool(args.gpu_usage)
+    if collect_gpu_usage and accelerator_backend != "gpu":
+        logger.warning(
+            "--gpu-usage is enabled but GPU backend is not detected; disabling GPU usage sampling"
+        )
+        collect_gpu_usage = False
+
+    gpu_smi_disabled = False
+    gpu_trace_pid = 1
+    if collect_gpu_usage:
+        chrome_tracing_data["traceEvents"].append(
+            {
+                "name": "process_name",
+                "ph": "M",
+                "ts": 0,
+                "pid": gpu_trace_pid,
+                "args": {"name": "gpu"},
             }
         )
 
@@ -949,12 +1122,27 @@ def main():
                 )
                 if (now - last_pid_refresh_time) >= refresh_interval_s:
                     t0 = time.monotonic()
-                    min_hbm = 0 if args.debug_pid_discovery else args.min_hbm_usage_mb
-                    discovered = _get_pids_from_npu_smi_info(min_hbm)
+                    if accelerator_backend == "npu":
+                        min_hbm = 0 if args.debug_pid_discovery else args.min_hbm_usage_mb
+                        discovered = _get_pids_from_npu_smi_info(min_hbm)
+                        timing_name = "npu_smi_info_discover"
+                        discover_source = "npu-smi info"
+                    elif accelerator_backend == "gpu":
+                        min_gpu_mem = (
+                            0 if args.debug_pid_discovery else args.min_gpu_mem_usage_mb
+                        )
+                        discovered = _get_pids_from_nvidia_smi_info(min_gpu_mem)
+                        timing_name = "nvidia_smi_discover"
+                        discover_source = "nvidia-smi"
+                    else:
+                        discovered = []
+                        timing_name = "auto_discover_none"
+                        discover_source = "none"
+
                     dt = time.monotonic() - t0
-                    _timing_add(timing_stats, "npu_smi_info_discover", dt)
+                    _timing_add(timing_stats, timing_name, dt)
                     logger.info(
-                        f"timing npu-smi info discover: {dt * 1000.0:.2f}ms pids={len(discovered)}"
+                        f"timing {discover_source} discover: {dt * 1000.0:.2f}ms pids={len(discovered)}"
                     )
                     last_pid_refresh_time = now
 
@@ -1008,7 +1196,7 @@ def main():
                             empty_since = now
                         elif (now - empty_since) >= AUTO_PID_EMPTY_EXIT_AFTER_S:
                             logger.info(
-                                f"No PIDs from `npu-smi info` for {int(AUTO_PID_EMPTY_EXIT_AFTER_S)}s; stopping capture"
+                                f"No PIDs from auto discovery for {int(AUTO_PID_EMPTY_EXIT_AFTER_S)}s; stopping capture"
                             )
                             stop_capture = True
                     else:
@@ -1062,6 +1250,54 @@ def main():
                     chrome_tracing_data.setdefault("npu", {}).setdefault(
                         "hbm_usage_rate", []
                     ).append({"ts_us": ts_us, "value": hbm})
+
+            if collect_gpu_usage and not gpu_smi_disabled:
+                try:
+                    t0 = time.monotonic()
+                    rates = _sample_gpu_usage_rates(args.gpu_smi_timeout)
+                    _timing_add(
+                        timing_stats, "nvidia_smi_usages_sample", time.monotonic() - t0
+                    )
+                except FileNotFoundError:
+                    logger.error("nvidia-smi not found; disable --gpu-usage")
+                    gpu_smi_disabled = True
+                    rates = None
+                except subprocess.TimeoutExpired:
+                    rates = None
+                except subprocess.CalledProcessError:
+                    rates = None
+
+                if rates and ("gpu" in rates):
+                    gpu = int(rates["gpu"])
+                    chrome_tracing_data["traceEvents"].append(
+                        {
+                            "name": "gpu_utilization_rate",
+                            "ph": "C",
+                            "ts": ts_us,
+                            "pid": gpu_trace_pid,
+                            "tid": 0,
+                            "args": {"gpu": gpu, "abs_time": abs_time},
+                        }
+                    )
+                    chrome_tracing_data.setdefault("gpu", {}).setdefault(
+                        "utilization_rate", []
+                    ).append({"ts_us": ts_us, "value": gpu})
+
+                if rates and ("mem" in rates):
+                    mem = int(rates["mem"])
+                    chrome_tracing_data["traceEvents"].append(
+                        {
+                            "name": "gpu_memory_usage_rate",
+                            "ph": "C",
+                            "ts": ts_us,
+                            "pid": gpu_trace_pid,
+                            "tid": 0,
+                            "args": {"memory": mem, "abs_time": abs_time},
+                        }
+                    )
+                    chrome_tracing_data.setdefault("gpu", {}).setdefault(
+                        "memory_usage_rate", []
+                    ).append({"ts_us": ts_us, "value": mem})
 
             if collect_cpu_mem_usage and not cpu_mem_disabled:
                 try:
