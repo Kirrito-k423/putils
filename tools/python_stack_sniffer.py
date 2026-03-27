@@ -240,7 +240,7 @@ def parse_args() -> argparse.Namespace:
         "--npu-usage",
         dest="npu_usage",
         action="store_true",
-        help="Sample `npu-smi info -t usages` metrics (Aicore Usage Rate(%%) / HBM Usage Rate(%%)) and record into output JSON",
+        help="Sample npu-smi metrics (Aicore/HBM Usage Rate). Auto-enabled when NPU backend detected.",
     )
     parser.add_argument(
         "--npu-aicore-usage",
@@ -288,7 +288,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gpu-usage",
         action="store_true",
-        help="Sample `nvidia-smi` metrics (utilization.gpu / utilization.memory) and record into output JSON",
+        help="Sample nvidia-smi metrics (utilization.gpu / utilization.memory). Auto-enabled when GPU backend detected.",
     )
     parser.add_argument(
         "--gpu-smi-timeout",
@@ -510,9 +510,138 @@ def _get_pids_from_nvidia_smi_info(min_gpu_mem_usage_mb: int = 0) -> List[int]:
     return pids
 
 
+def _sample_npu_memory_usage_mb_by_card() -> Dict[int, Dict[str, int]]:
+    try:
+        result = subprocess.run(
+            ["npu-smi", "info"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return {}
+
+    def _find_col_index(cols: List[str], patterns: List[str]) -> Optional[int]:
+        for i, c in enumerate(cols):
+            for p in patterns:
+                if re.search(p, c):
+                    return i
+        return None
+
+    def _parse_int(cell: str) -> Optional[int]:
+        m = re.search(r"(\d+)", cell)
+        return int(m.group(1)) if m else None
+
+    in_process_table = False
+    process_card_col: Optional[int] = None
+    process_mem_col: Optional[int] = None
+    mem_by_card: Dict[int, Dict[str, int]] = {}
+    current_device_card: Optional[int] = None
+
+    for raw_line in (result.stdout or "").splitlines():
+        line = raw_line.rstrip("\n")
+        lower = line.lower()
+        if re.search(r"process\s*id", lower) and re.search(r"process\s*name", lower):
+            in_process_table = True
+            if "|" in line:
+                header_cols = [
+                    p.strip().lower() for p in line.strip().strip("|").split("|")
+                ]
+                process_card_col = _find_col_index(
+                    header_cols,
+                    [
+                        r"\bnpu\b.*\bid\b",
+                        r"\bdevice\b.*\bid\b",
+                        r"\bchip\b.*\bid\b",
+                    ],
+                )
+                process_mem_col = _find_col_index(
+                    header_cols,
+                    [
+                        r"hbm.*usage",
+                        r"memory.*usage",
+                        r"\busage\b.*\bmb\b",
+                        r"\bmb\b.*\busage\b",
+                    ],
+                )
+            continue
+
+        if not in_process_table:
+            if line.startswith("+"):
+                continue
+            if not line.strip().startswith("|"):
+                continue
+
+            parts = [p.strip() for p in line.strip().strip("|").split("|")]
+            if not parts:
+                continue
+
+            first_col_card = _parse_int(parts[0])
+            has_bus_id = bool(
+                re.search(r"\b[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]\b", lower)
+            )
+
+            if has_bus_id and current_device_card is not None:
+                card_id = int(current_device_card)
+            else:
+                card_id = first_col_card
+                if first_col_card is not None:
+                    current_device_card = int(first_col_card)
+
+            if card_id is None:
+                continue
+
+            pairs = re.findall(r"(\d+)\s*/\s*(\d+)", line)
+            if not pairs:
+                continue
+
+            used_mb, total_mb = max(((int(u), int(t)) for u, t in pairs), key=lambda x: x[1])
+            mem_by_card[card_id] = {
+                "hbm_used_mb": int(used_mb),
+                "hbm_total_mb": int(total_mb),
+            }
+            continue
+
+        if line.startswith("+"):
+            continue
+        if not line.strip().startswith("|"):
+            continue
+
+        parts = [p.strip() for p in line.strip().strip("|").split("|")]
+        if len(parts) < 3:
+            continue
+
+        card_id: Optional[int] = None
+        if process_card_col is not None and 0 <= process_card_col < len(parts):
+            card_id = _parse_int(parts[process_card_col])
+        elif parts:
+            card_id = _parse_int(parts[0])
+
+        mem_mb: Optional[int] = None
+        if process_mem_col is not None and 0 <= process_mem_col < len(parts):
+            mem_mb = _parse_int(parts[process_mem_col])
+        elif parts:
+            mem_mb = _parse_int(parts[-1])
+
+        if card_id is None or mem_mb is None:
+            continue
+
+        if card_id not in mem_by_card:
+            mem_by_card[card_id] = {
+                "hbm_used_mb": int(mem_mb),
+                "hbm_total_mb": 0,
+            }
+        elif int(mem_by_card[card_id].get("hbm_total_mb", 0)) <= 0:
+            mem_by_card[card_id]["hbm_used_mb"] = int(
+                mem_by_card[card_id].get("hbm_used_mb", 0)
+            ) + int(mem_mb)
+
+    return mem_by_card
+
+
 def _sample_npu_usage_rates(
     refresh_interval_s: int, timeout_s: float
-) -> Optional[Dict[str, int]]:
+) -> Optional[List[Dict[str, int]]]:
     cmd = ["npu-smi", "info", "-t", "usages", "-i", str(int(refresh_interval_s))]
 
     proc = subprocess.Popen(
@@ -524,7 +653,8 @@ def _sample_npu_usage_rates(
     )
 
     deadline = time.monotonic() + max(float(timeout_s or 0.0), 0.1)
-    found: Dict[str, int] = {}
+    per_card: Dict[int, Dict[str, int]] = {}
+    current_card = 0
     try:
         stdout = proc.stdout
         if stdout is None:
@@ -541,24 +671,44 @@ def _sample_npu_usage_rates(
                 break
 
             lower = line.lower()
+            card_match = re.search(
+                r"(?:npu|device|chip)\s*(?:id)?\s*[:=]\s*(\d+)",
+                lower,
+            )
+            if card_match:
+                current_card = int(card_match.group(1))
+
             key: Optional[str] = None
             if "aicore usage rate" in lower:
-                key = "aicore"
+                key = "aicore_usage_rate"
             elif "hbm usage rate" in lower:
-                key = "hbm"
+                key = "hbm_usage_rate"
 
-            if key is None or key in found:
+            if key is None:
                 continue
 
             m = re.search(r":\s*(\d+)\b", line)
             if not m:
                 continue
 
-            found[key] = int(m.group(1))
-            if "aicore" in found and "hbm" in found:
-                break
+            per_card.setdefault(current_card, {})[key] = int(m.group(1))
 
-        return found or None
+        mem_by_card = _sample_npu_memory_usage_mb_by_card()
+        for card_id, mem in mem_by_card.items():
+            if "hbm_used_mb" in mem:
+                per_card.setdefault(card_id, {})["hbm_used_mb"] = int(mem["hbm_used_mb"])
+            if "hbm_total_mb" in mem:
+                per_card.setdefault(card_id, {})["hbm_total_mb"] = int(mem["hbm_total_mb"])
+
+        if not per_card:
+            return None
+
+        metrics: List[Dict[str, int]] = []
+        for card_id in sorted(per_card.keys()):
+            item = {"index": int(card_id)}
+            item.update(per_card[card_id])
+            metrics.append(item)
+        return metrics
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -572,11 +722,11 @@ def _sample_npu_usage_rates(
                     pass
 
 
-def _sample_gpu_usage_rates(timeout_s: float) -> Optional[Dict[str, int]]:
+def _sample_gpu_usage_rates(timeout_s: float) -> Optional[List[Dict[str, int]]]:
     timeout = max(float(timeout_s or 0.0), 0.1)
     cmd = [
         "nvidia-smi",
-        "--query-gpu=utilization.gpu,utilization.memory",
+        "--query-gpu=index,utilization.gpu,utilization.memory,memory.used,memory.total",
         "--format=csv,noheader,nounits",
     ]
     result = subprocess.run(
@@ -587,32 +737,39 @@ def _sample_gpu_usage_rates(timeout_s: float) -> Optional[Dict[str, int]]:
         timeout=timeout,
     )
 
-    gpu_utils: List[int] = []
-    mem_utils: List[int] = []
+    metrics: List[Dict[str, int]] = []
     for raw_line in (result.stdout or "").splitlines():
         line = raw_line.strip()
         if not line:
             continue
 
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 2:
+        if len(parts) < 5:
             continue
 
-        m_gpu = re.search(r"(\d+)", parts[0])
-        m_mem = re.search(r"(\d+)", parts[1])
-        if not m_gpu or not m_mem:
+        m_idx = re.search(r"(\d+)", parts[0])
+        m_gpu = re.search(r"(\d+)", parts[1])
+        m_mem = re.search(r"(\d+)", parts[2])
+        m_mem_used = re.search(r"(\d+)", parts[3])
+        m_mem_total = re.search(r"(\d+)", parts[4])
+        if not m_idx or not m_gpu or not m_mem:
             continue
 
-        gpu_utils.append(int(m_gpu.group(1)))
-        mem_utils.append(int(m_mem.group(1)))
+        item: Dict[str, int] = {
+            "index": int(m_idx.group(1)),
+            "gpu_usage_rate": int(m_gpu.group(1)),
+            "mem_usage_rate": int(m_mem.group(1)),
+        }
+        if m_mem_used:
+            item["mem_used_mb"] = int(m_mem_used.group(1))
+        if m_mem_total:
+            item["mem_total_mb"] = int(m_mem_total.group(1))
+        metrics.append(item)
 
-    if not gpu_utils or not mem_utils:
+    if not metrics:
         return None
 
-    return {
-        "gpu": max(gpu_utils),
-        "mem": max(mem_utils),
-    }
+    return sorted(metrics, key=lambda x: int(x.get("index", 0)))
 
 
 def _sample_cpu_mem_stats(timeout_s: float) -> Optional[Dict[str, int]]:
@@ -1006,12 +1163,15 @@ def main():
         "displayTimeUnit": "us",
     }
 
-    collect_npu_usage = bool(args.npu_usage)
+    collect_npu_usage = bool(args.npu_usage) or (accelerator_backend == "npu")
     if collect_npu_usage and accelerator_backend != "npu":
         logger.warning(
             "--npu-usage is enabled but NPU backend is not detected; disabling NPU usage sampling"
         )
         collect_npu_usage = False
+
+    if collect_npu_usage and accelerator_backend == "npu" and not args.npu_usage:
+        logger.info("NPU backend detected; enabling NPU usage monitoring by default")
 
     npu_smi_disabled = False
     npu_trace_pid = 0
@@ -1026,12 +1186,15 @@ def main():
             }
         )
 
-    collect_gpu_usage = bool(args.gpu_usage)
+    collect_gpu_usage = bool(args.gpu_usage) or (accelerator_backend == "gpu")
     if collect_gpu_usage and accelerator_backend != "gpu":
         logger.warning(
             "--gpu-usage is enabled but GPU backend is not detected; disabling GPU usage sampling"
         )
         collect_gpu_usage = False
+
+    if collect_gpu_usage and accelerator_backend == "gpu" and not args.gpu_usage:
+        logger.info("GPU backend detected; enabling GPU usage monitoring by default")
 
     gpu_smi_disabled = False
     gpu_trace_pid = 1
@@ -1219,37 +1382,102 @@ def main():
                     npu_smi_disabled = True
                     rates = None
 
-                if rates and ("aicore" in rates):
-                    aicore = int(rates["aicore"])
-                    chrome_tracing_data["traceEvents"].append(
-                        {
-                            "name": "npu_aicore_usage_rate",
-                            "ph": "C",
-                            "ts": ts_us,
-                            "pid": npu_trace_pid,
-                            "tid": 0,
-                            "args": {"aicore": aicore, "abs_time": abs_time},
-                        }
-                    )
-                    chrome_tracing_data.setdefault("npu", {}).setdefault(
-                        "aicore_usage_rate", []
-                    ).append({"ts_us": ts_us, "value": aicore})
+                if rates:
+                    npu_obj = chrome_tracing_data.setdefault("npu", {})
+                    npu_cards = npu_obj.setdefault("cards", {})
+                    max_aicore: Optional[int] = None
+                    max_hbm_rate: Optional[int] = None
+                    max_hbm_used_mb: Optional[int] = None
 
-                if rates and ("hbm" in rates):
-                    hbm = int(rates["hbm"])
-                    chrome_tracing_data["traceEvents"].append(
-                        {
-                            "name": "npu_hbm_usage_rate",
-                            "ph": "C",
-                            "ts": ts_us,
-                            "pid": npu_trace_pid,
-                            "tid": 0,
-                            "args": {"hbm": hbm, "abs_time": abs_time},
-                        }
-                    )
-                    chrome_tracing_data.setdefault("npu", {}).setdefault(
-                        "hbm_usage_rate", []
-                    ).append({"ts_us": ts_us, "value": hbm})
+                    for card in rates:
+                        card_id = int(card.get("index", 0))
+                        card_key = str(card_id)
+                        card_obj = npu_cards.setdefault(card_key, {})
+
+                        if "aicore_usage_rate" in card:
+                            aicore = int(card["aicore_usage_rate"])
+                            chrome_tracing_data["traceEvents"].append(
+                                {
+                                    "name": "npu_aicore_usage_rate",
+                                    "ph": "C",
+                                    "ts": ts_us,
+                                    "pid": npu_trace_pid,
+                                    "tid": card_id,
+                                    "args": {
+                                        "card": card_id,
+                                        "aicore": aicore,
+                                        "abs_time": abs_time,
+                                    },
+                                }
+                            )
+                            card_obj.setdefault("aicore_usage_rate", []).append(
+                                {"ts_us": ts_us, "value": aicore}
+                            )
+                            if max_aicore is None or aicore > max_aicore:
+                                max_aicore = aicore
+
+                        if "hbm_usage_rate" in card:
+                            hbm_rate = int(card["hbm_usage_rate"])
+                            chrome_tracing_data["traceEvents"].append(
+                                {
+                                    "name": "npu_hbm_usage_rate",
+                                    "ph": "C",
+                                    "ts": ts_us,
+                                    "pid": npu_trace_pid,
+                                    "tid": card_id,
+                                    "args": {
+                                        "card": card_id,
+                                        "hbm": hbm_rate,
+                                        "abs_time": abs_time,
+                                    },
+                                }
+                            )
+                            card_obj.setdefault("hbm_usage_rate", []).append(
+                                {"ts_us": ts_us, "value": hbm_rate}
+                            )
+                            if max_hbm_rate is None or hbm_rate > max_hbm_rate:
+                                max_hbm_rate = hbm_rate
+
+                        if "hbm_used_mb" in card:
+                            hbm_used_mb = int(card["hbm_used_mb"])
+                            chrome_tracing_data["traceEvents"].append(
+                                {
+                                    "name": "npu_hbm_used_mb",
+                                    "ph": "C",
+                                    "ts": ts_us,
+                                    "pid": npu_trace_pid,
+                                    "tid": card_id,
+                                    "args": {
+                                        "card": card_id,
+                                        "hbm_used_mb": hbm_used_mb,
+                                        "abs_time": abs_time,
+                                    },
+                                }
+                            )
+                            card_obj.setdefault("hbm_used_mb", []).append(
+                                {"ts_us": ts_us, "value": hbm_used_mb}
+                            )
+                            if max_hbm_used_mb is None or hbm_used_mb > max_hbm_used_mb:
+                                max_hbm_used_mb = hbm_used_mb
+
+                        if "hbm_total_mb" in card:
+                            hbm_total_mb = int(card["hbm_total_mb"])
+                            card_obj.setdefault("hbm_total_mb", []).append(
+                                {"ts_us": ts_us, "value": hbm_total_mb}
+                            )
+
+                    if max_aicore is not None:
+                        npu_obj.setdefault("aicore_usage_rate", []).append(
+                            {"ts_us": ts_us, "value": max_aicore}
+                        )
+                    if max_hbm_rate is not None:
+                        npu_obj.setdefault("hbm_usage_rate", []).append(
+                            {"ts_us": ts_us, "value": max_hbm_rate}
+                        )
+                    if max_hbm_used_mb is not None:
+                        npu_obj.setdefault("hbm_used_mb", []).append(
+                            {"ts_us": ts_us, "value": max_hbm_used_mb}
+                        )
 
             if collect_gpu_usage and not gpu_smi_disabled:
                 try:
@@ -1267,37 +1495,102 @@ def main():
                 except subprocess.CalledProcessError:
                     rates = None
 
-                if rates and ("gpu" in rates):
-                    gpu = int(rates["gpu"])
-                    chrome_tracing_data["traceEvents"].append(
-                        {
-                            "name": "gpu_utilization_rate",
-                            "ph": "C",
-                            "ts": ts_us,
-                            "pid": gpu_trace_pid,
-                            "tid": 0,
-                            "args": {"gpu": gpu, "abs_time": abs_time},
-                        }
-                    )
-                    chrome_tracing_data.setdefault("gpu", {}).setdefault(
-                        "utilization_rate", []
-                    ).append({"ts_us": ts_us, "value": gpu})
+                if rates:
+                    gpu_obj = chrome_tracing_data.setdefault("gpu", {})
+                    gpu_cards = gpu_obj.setdefault("cards", {})
+                    max_gpu_rate: Optional[int] = None
+                    max_mem_rate: Optional[int] = None
+                    max_mem_used_mb: Optional[int] = None
 
-                if rates and ("mem" in rates):
-                    mem = int(rates["mem"])
-                    chrome_tracing_data["traceEvents"].append(
-                        {
-                            "name": "gpu_memory_usage_rate",
-                            "ph": "C",
-                            "ts": ts_us,
-                            "pid": gpu_trace_pid,
-                            "tid": 0,
-                            "args": {"memory": mem, "abs_time": abs_time},
-                        }
-                    )
-                    chrome_tracing_data.setdefault("gpu", {}).setdefault(
-                        "memory_usage_rate", []
-                    ).append({"ts_us": ts_us, "value": mem})
+                    for card in rates:
+                        card_id = int(card.get("index", 0))
+                        card_key = str(card_id)
+                        card_obj = gpu_cards.setdefault(card_key, {})
+
+                        if "gpu_usage_rate" in card:
+                            gpu_rate = int(card["gpu_usage_rate"])
+                            chrome_tracing_data["traceEvents"].append(
+                                {
+                                    "name": "gpu_utilization_rate",
+                                    "ph": "C",
+                                    "ts": ts_us,
+                                    "pid": gpu_trace_pid,
+                                    "tid": card_id,
+                                    "args": {
+                                        "card": card_id,
+                                        "gpu": gpu_rate,
+                                        "abs_time": abs_time,
+                                    },
+                                }
+                            )
+                            card_obj.setdefault("utilization_rate", []).append(
+                                {"ts_us": ts_us, "value": gpu_rate}
+                            )
+                            if max_gpu_rate is None or gpu_rate > max_gpu_rate:
+                                max_gpu_rate = gpu_rate
+
+                        if "mem_usage_rate" in card:
+                            mem_rate = int(card["mem_usage_rate"])
+                            chrome_tracing_data["traceEvents"].append(
+                                {
+                                    "name": "gpu_memory_usage_rate",
+                                    "ph": "C",
+                                    "ts": ts_us,
+                                    "pid": gpu_trace_pid,
+                                    "tid": card_id,
+                                    "args": {
+                                        "card": card_id,
+                                        "memory": mem_rate,
+                                        "abs_time": abs_time,
+                                    },
+                                }
+                            )
+                            card_obj.setdefault("memory_usage_rate", []).append(
+                                {"ts_us": ts_us, "value": mem_rate}
+                            )
+                            if max_mem_rate is None or mem_rate > max_mem_rate:
+                                max_mem_rate = mem_rate
+
+                        if "mem_used_mb" in card:
+                            mem_used_mb = int(card["mem_used_mb"])
+                            chrome_tracing_data["traceEvents"].append(
+                                {
+                                    "name": "gpu_memory_used_mb",
+                                    "ph": "C",
+                                    "ts": ts_us,
+                                    "pid": gpu_trace_pid,
+                                    "tid": card_id,
+                                    "args": {
+                                        "card": card_id,
+                                        "memory_used_mb": mem_used_mb,
+                                        "abs_time": abs_time,
+                                    },
+                                }
+                            )
+                            card_obj.setdefault("memory_used_mb", []).append(
+                                {"ts_us": ts_us, "value": mem_used_mb}
+                            )
+                            if max_mem_used_mb is None or mem_used_mb > max_mem_used_mb:
+                                max_mem_used_mb = mem_used_mb
+
+                        if "mem_total_mb" in card:
+                            mem_total_mb = int(card["mem_total_mb"])
+                            card_obj.setdefault("memory_total_mb", []).append(
+                                {"ts_us": ts_us, "value": mem_total_mb}
+                            )
+
+                    if max_gpu_rate is not None:
+                        gpu_obj.setdefault("utilization_rate", []).append(
+                            {"ts_us": ts_us, "value": max_gpu_rate}
+                        )
+                    if max_mem_rate is not None:
+                        gpu_obj.setdefault("memory_usage_rate", []).append(
+                            {"ts_us": ts_us, "value": max_mem_rate}
+                        )
+                    if max_mem_used_mb is not None:
+                        gpu_obj.setdefault("memory_used_mb", []).append(
+                            {"ts_us": ts_us, "value": max_mem_used_mb}
+                        )
 
             if collect_cpu_mem_usage and not cpu_mem_disabled:
                 try:
