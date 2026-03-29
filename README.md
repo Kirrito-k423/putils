@@ -209,3 +209,11 @@ python python_stack_sniffer.py -p 1667631 -i 0.1 -o stack_trace.json --autosave-
 - 转换为Chrome Tracing事件格式（B=begin, E=end, M=metadata, C=counter）
 - 支持动态PID发现和移除，自动管理open stacks避免数据错误
 - 记录各阶段耗时统计，便于性能分析和问题诊断
+
+---
+
+## compare_perf 文档入口
+
+`compare_perf` 的快速接入、CLI 工作流、mapping/cache、产物解读和故障排查已迁移到子目录文档:
+
+- [putils/compare_perf/README.md](putils/compare_perf/README.md)
