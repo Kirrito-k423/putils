@@ -195,6 +195,15 @@ The tool generates a Chrome Tracing compatible JSON file that can be opened in:
 6. **多线程支持**: 可捕获所有线程或仅主线程
 7. **自动保存**: 支持定期快照，防止长时运行任务数据丢失
 
+### 异步使用
+
+```bash
+datetime=$(date +%Y%m%d_%H%M%S)
+
+pkill -f "python_stack_sniffer.py"
+python /mnt/huawei/tanshaojie/putils/tools/python_stack_sniffer.py -i 2 -o stack_trace_${datetime}.json --autosave-interval 10 --npu-usage --cpu-mem-usage --all-thread --debug-pid-discovery 1>&2 >> tmp.log &
+```
+
 ### 使用示例
 
 ```bash
