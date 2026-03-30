@@ -49,9 +49,46 @@ from putils.compare_perf.schema import build_schema
 
 
 collector = TimingCollector(sync_mode="none")
-snapshot_dir = Path("./compare_perf_snapshots")
-snapshot_dir.mkdir(parents=True, exist_ok=True)
 
+
+def dump_compare_perf_snapshot(
+    *,
+    collector: TimingCollector,
+    output_dir: str,
+    step: int,
+    tag: str,
+) -> Path:
+    snapshot_dir = Path(output_dir)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    events_payload = [
+        {
+            "name": event.name,
+            "duration_ns": event.duration_ns,
+            "start_ns": event.start_ns,
+            "end_ns": event.end_ns,
+        }
+        for event in collector.events
+    ]
+    payload = build_schema(
+        events=events_payload,
+        run_metadata={"tag": tag, "step": step},
+        alignment={
+            "matched": [],
+            "ambiguous": [],
+            "unmatched": {"left": [], "right": []},
+            "counts": {"matched": 0, "ambiguous": 0, "unmatched": 0},
+        },
+        summary=collector.summary,
+    )
+
+    snapshot_path = snapshot_dir / f"compare_perf_step_{step}_{tag}.json"
+    with snapshot_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return snapshot_path
+
+
+output_dir = "./compare_perf_snapshots"
 tag = "train-baseline"
 snapshot_every = 10
 
@@ -61,29 +98,12 @@ for step in range(1, 51):
         pass
 
     if step % snapshot_every == 0:
-        events_payload = [
-            {
-                "name": event.name,
-                "duration_ns": event.duration_ns,
-                "start_ns": event.start_ns,
-                "end_ns": event.end_ns,
-            }
-            for event in collector.events
-        ]
-        payload = build_schema(
-            events=events_payload,
-            run_metadata={"tag": tag, "step": step},
-            alignment={
-                "matched": [],
-                "ambiguous": [],
-                "unmatched": {"left": [], "right": []},
-                "counts": {"matched": 0, "ambiguous": 0, "unmatched": 0},
-            },
-            summary=collector.summary,
+        dump_compare_perf_snapshot(
+            collector=collector,
+            output_dir=output_dir,
+            step=step,
+            tag=tag,
         )
-        snapshot_path = snapshot_dir / f"compare_perf_step_{step}_{tag}.json"
-        with snapshot_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
 
 ```
 
