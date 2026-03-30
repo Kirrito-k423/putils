@@ -34,6 +34,63 @@ print(collector.summary)
 - `threshold_seconds` 只影响是否保留 `events` 明细, 不影响 `summary` 聚合统计。
 - `collector.events` 适合追踪明细时序, `collector.summary` 适合汇总对比。
 
+#### 训练循环里每 N step 手动落盘一次（中间快照）
+
+`with compare_perf(...)` 和 `@compare_perf(...)` 默认只会把数据写到内存里的 `collector`，不会自动写文件。
+
+如果你想在训练中间查看结果，可以按 step 周期手动导出快照。下面示例每 10 step 导出一次，文件名包含 `step` 和 `tag`。
+
+```python
+import json
+from pathlib import Path
+
+from putils.compare_perf import TimingCollector, compare_perf
+from putils.compare_perf.schema import build_schema
+
+
+collector = TimingCollector(sync_mode="none")
+snapshot_dir = Path("./compare_perf_snapshots")
+snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+tag = "train-baseline"
+snapshot_every = 10
+
+for step in range(1, 51):
+    with compare_perf("train.step", collector=collector, threshold_seconds=0.05):
+        # your training step
+        pass
+
+    if step % snapshot_every == 0:
+        events_payload = [
+            {
+                "name": event.name,
+                "duration_ns": event.duration_ns,
+                "start_ns": event.start_ns,
+                "end_ns": event.end_ns,
+            }
+            for event in collector.events
+        ]
+        payload = build_schema(
+            events=events_payload,
+            run_metadata={"tag": tag, "step": step},
+            alignment={
+                "matched": [],
+                "ambiguous": [],
+                "unmatched": {"left": [], "right": []},
+                "counts": {"matched": 0, "ambiguous": 0, "unmatched": 0},
+            },
+            summary=collector.summary,
+        )
+        snapshot_path = snapshot_dir / f"compare_perf_step_{step}_{tag}.json"
+        with snapshot_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+```
+
+提示:
+- `threshold_seconds` 可能让 `events` 在某些 step 为空, 但 `summary` 仍会持续累积。
+- 中间快照是手动导出, 适合训练中途审阅趋势和回归信号。
+
 ### 2) 参数与阈值解释
 
 - `sync_mode`: `none` 或 `boundary`

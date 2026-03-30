@@ -19,6 +19,13 @@ def test_compare_perf_docs_include_minimal_integration_examples():
     assert "@compare_perf(\"post_process\", collector=collector, threshold_seconds=0.05)" in readme
     assert "collector.events" in readme
     assert "collector.summary" in readme
+    assert "默认只会把数据写到内存里的 `collector`，不会自动写文件" in readme
+    assert "for step in range(1, 51):" in readme
+    assert "if step % snapshot_every == 0:" in readme
+    assert "build_schema(" in readme
+    assert "json.dump(payload, f, ensure_ascii=False, indent=2)" in readme
+    assert 'snapshot_path = snapshot_dir / f"compare_perf_step_{step}_{tag}.json"' in readme
+    assert "`threshold_seconds` 可能让 `events` 在某些 step 为空" in readme
 
 
 def test_compare_perf_docs_collect_diff_workflow_matches_cli():
