@@ -14,6 +14,7 @@ from putils.compare_perf.schema import (
     validate_schema,
 )
 from putils.compare_perf.hooks import model_forward_timing, register_model_hooks
+from putils.compare_perf.snapshot import dump_compare_perf_snapshot
 
 __all__ = [
     "AlignmentMappingCache",
@@ -27,6 +28,7 @@ __all__ = [
     "align_modules",
     "build_schema",
     "compare_perf",
+    "dump_compare_perf_snapshot",
     "measure_overhead",
     "model_forward_timing",
     "parse_schema",

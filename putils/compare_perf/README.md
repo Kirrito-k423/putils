@@ -41,53 +41,10 @@ print(collector.summary)
 如果你想在训练中间查看结果，可以按 step 周期手动导出快照。下面示例每 10 step 导出一次，文件名包含 `step` 和 `tag`。
 
 ```python
-import json
-from pathlib import Path
-
-from putils.compare_perf import TimingCollector, compare_perf
-from putils.compare_perf.schema import build_schema
+from putils.compare_perf import TimingCollector, compare_perf, dump_compare_perf_snapshot
 
 
 collector = TimingCollector(sync_mode="none")
-
-
-def dump_compare_perf_snapshot(
-    *,
-    collector: TimingCollector,
-    output_dir: str,
-    step: int,
-    tag: str,
-) -> Path:
-    snapshot_dir = Path(output_dir)
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-
-    events_payload = [
-        {
-            "name": event.name,
-            "duration_ns": event.duration_ns,
-            "start_ns": event.start_ns,
-            "end_ns": event.end_ns,
-        }
-        for event in collector.events
-    ]
-    payload = build_schema(
-        events=events_payload,
-        run_metadata={"tag": tag, "step": step},
-        alignment={
-            "matched": [],
-            "ambiguous": [],
-            "unmatched": {"left": [], "right": []},
-            "counts": {"matched": 0, "ambiguous": 0, "unmatched": 0},
-        },
-        summary=collector.summary,
-    )
-
-    snapshot_path = snapshot_dir / f"compare_perf_step_{step}_{tag}.json"
-    with snapshot_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    return snapshot_path
-
-
 output_dir = "./compare_perf_snapshots"
 tag = "train-baseline"
 snapshot_every = 10
@@ -268,3 +225,34 @@ python3 -m putils.compare_perf.cli diff \
 - 传入合法 `scope_name`。
 - 设置 `threshold_seconds > 0`。
 - `sync_mode` 仅用 `none` 或 `boundary`。
+
+### 8) 真实 Torch E2E 示例（前向+反向+优化器）
+
+如果你要验证 compare_perf 在真实训练路径上的可行性，可以直接跑仓库里的 `examples/compare_perf_torch_e2e.py`。
+
+前提:
+- 安装 torch（CPU 版本即可复现示例）。
+- 在仓库根目录执行 `pip install -e .`。
+
+运行:
+
+```bash
+python3 examples/compare_perf_torch_e2e.py \
+  --output-dir /tmp/compare-perf-e2e \
+  --steps 6 \
+  --sleep-seconds 0.03 \
+  --top-n 5
+```
+
+该命令会在 `--output-dir` 下生成这些产物:
+- `baseline.json`
+- `target.json`
+- `trace.json`
+- `trace_aligned.json`
+- `trace_aligned_stack.json`
+- `summary.json`
+- `summary.md`
+
+快速验收点:
+- `summary.json` 里的 `top_regressions` 应包含注入 sleep 的模块（默认 `encoder.layer.1.mlp`）。
+- 你也可以直接看命令行输出里的 `top_regressions` 列表，确认该模块被识别为回归热点。
