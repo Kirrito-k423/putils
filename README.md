@@ -26,6 +26,21 @@
 - Supported Environments: NPU, CUDA
 - Related Tools: VizTracer (tracing), Backward Hook (gradient monitoring)
 
+### Installation
+
+```bash
+# Basic installation (core utilities only)
+pip install putils
+
+# Install with stack-sniffer support (requires py-spy)
+pip install putils[stack-sniffer]
+
+# Development installation
+pip install -e .
+pip install -e .[stack-sniffer]  # with stack-sniffer support
+pip install -r requirements-dev.txt  # development dependencies
+```
+
 ### Project Structure
 
 ```
@@ -71,6 +86,21 @@ putils/
 - 语言：Python 100%
 - 支持环境：NPU、CUDA
 - 相关工具：VizTracer（用于追踪）、Backward Hook（用于梯度监控）
+
+### 安装
+
+```bash
+# 基础安装（仅核心工具）
+pip install putils
+
+# 安装 stack-sniffer 支持（需要 py-spy）
+pip install putils[stack-sniffer]
+
+# 开发模式安装
+pip install -e .
+pip install -e .[stack-sniffer]  # 包含 stack-sniffer 支持
+pip install -r requirements-dev.txt  # 开发依赖
+```
 
 ### 项目结构
 

@@ -11,6 +11,9 @@ setup(
         "portalocker",
         "debugpy"
     ],
+    extras_require={
+        "stack-sniffer": ["py-spy"],
+    },
     python_requires=">=3.7",
     classifiers=[
         "Programming Language :: Python :: 3",
