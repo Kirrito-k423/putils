@@ -49,33 +49,37 @@ print(collector.summary)
 
 ```bash
 # 1) collect baseline
-python -m putils.compare_perf.cli collect \
+python3 -m putils.compare_perf.cli collect \
   --event encoder.layer.0.attn:100 \
   --event encoder.layer.1.mlp:40 \
   --output baseline.json \
   --tag baseline
 
 # 2) collect target
-python -m putils.compare_perf.cli collect \
+python3 -m putils.compare_perf.cli collect \
   --event enc.block.0.attention:120 \
   --event enc.block.1.feedforward:20 \
   --output target.json \
   --tag target
 
 # 3) diff + export
-python -m putils.compare_perf.cli diff \
+python3 -m putils.compare_perf.cli diff \
   --baseline baseline.json \
   --target target.json \
   --trace-out compare_perf_trace.json \
+  --trace-aligned-out trace_aligned.json \
+  --trace-aligned-stack-out trace_aligned_stack.json \
   --summary-json-out compare_perf_summary.json \
   --summary-md-out compare_perf_summary.md \
   --top-n 5
 ```
 
-`diff` 命令会输出 3 行路径，依次是:
+`diff` 命令会输出 5 行路径，依次是:
 1. trace json
-2. summary json
-3. summary markdown
+2. aligned trace json
+3. aligned stack trace json
+4. summary json
+5. summary markdown
 
 ### 4) 映射机制, --mapping 和 --alignment-cache
 
@@ -84,7 +88,7 @@ python -m putils.compare_perf.cli diff \
 - 手工确认映射:
 
 ```bash
-python -m putils.compare_perf.cli diff \
+python3 -m putils.compare_perf.cli diff \
   --baseline baseline.json \
   --target target.json \
   --mapping encoder.layer.1.mlp=enc.block.1.feedforward
@@ -93,7 +97,7 @@ python -m putils.compare_perf.cli diff \
 - 开启映射缓存，复用上次确认结果:
 
 ```bash
-python -m putils.compare_perf.cli diff \
+python3 -m putils.compare_perf.cli diff \
   --baseline baseline.json \
   --target target.json \
   --alignment-cache .cache/compare_perf_alignment.json \
@@ -104,10 +108,14 @@ python -m putils.compare_perf.cli diff \
 - `--mapping` 可重复传入。
 - `--enable-rank-aggregation` 可在日志包含 `run_metadata.rank_summary` 时生成 p50/p95 聚合对比。
 
-### 5) 结果解读, 三个产物各看什么
+### 5) 结果解读, 五个产物各看什么
 
 - `compare_perf_trace.json`
   - Chrome Trace 格式，`displayTimeUnit=us`，可直接导入 `chrome://tracing`。
+- `trace_aligned.json`
+  - 匹配到的 baseline/target 模块按 pair 对齐展示，适合快速看同一 pair 的耗时差。
+- `trace_aligned_stack.json`
+  - 在 pair 对齐基础上保留 parent + child 层级，适合看父模块定位后的子模块对齐细节。
 - `compare_perf_summary.json`
   - 结构化对比结论，重点关注:
     - `alignment.counts`
@@ -116,7 +124,21 @@ python -m putils.compare_perf.cli diff \
 - `compare_perf_summary.md`
   - 便于审阅和贴到评审系统的文本摘要。
 
-### 6) 常见错误排查
+### 6) aligned stack 语义说明
+
+`trace_aligned_stack.json` 主要服务于“父模块定位 + 子模块对齐观察”，可先找异常父模块，再看其子层级。
+
+- `parent_mode=synthetic_aligned`
+  - parent 是对齐视图中的 synthetic 父跨度，用于稳定承载子模块对齐结果。
+- `child_match_status`
+  - `matched`: 子模块在两侧成功匹配并可直接对齐。
+  - `ambiguous`: 候选不唯一或置信度不足，需人工判断。
+  - `unmatched`: 只在一侧出现，另一侧缺失。
+  - `parent`: 当前事件是父层级标记，不是子匹配条目。
+- child 对齐优先级
+  - 在每个已匹配父模块内，先做 child alignment，再回填到 aligned stack 视图。
+
+### 7) 常见错误排查
 
 #### A. ERROR[2] invalid --event format
 

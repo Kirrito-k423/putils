@@ -25,19 +25,27 @@ def test_compare_perf_docs_collect_diff_workflow_matches_cli():
     readme = _compare_perf_readme_text()
 
     required_doc_snippets = [
-        "python -m putils.compare_perf.cli collect",
-        "python -m putils.compare_perf.cli diff",
+        "python3 -m putils.compare_perf.cli collect",
+        "python3 -m putils.compare_perf.cli diff",
         "--event encoder.layer.0.attn:100",
         "--event enc.block.0.attention:120",
         "--baseline baseline.json",
         "--target target.json",
         "--trace-out compare_perf_trace.json",
+        "--trace-aligned-out trace_aligned.json",
+        "--trace-aligned-stack-out trace_aligned_stack.json",
         "--summary-json-out compare_perf_summary.json",
         "--summary-md-out compare_perf_summary.md",
         "--top-n 5",
         "--alignment-cache .cache/compare_perf_alignment.json",
         "--mapping encoder.layer.1.mlp=enc.block.1.feedforward",
         "--enable-rank-aggregation",
+        "parent_mode=synthetic_aligned",
+        "child_match_status",
+        "matched",
+        "ambiguous",
+        "unmatched",
+        "parent",
     ]
     for snippet in required_doc_snippets:
         assert snippet in readme
@@ -69,6 +77,10 @@ def test_compare_perf_docs_collect_diff_workflow_matches_cli():
             "target.json",
             "--trace-out",
             "compare_perf_trace.json",
+            "--trace-aligned-out",
+            "trace_aligned.json",
+            "--trace-aligned-stack-out",
+            "trace_aligned_stack.json",
             "--summary-json-out",
             "compare_perf_summary.json",
             "--summary-md-out",
@@ -85,13 +97,15 @@ def test_compare_perf_docs_collect_diff_workflow_matches_cli():
     assert diff_args.command == "diff"
     assert diff_args.top_n == 5
     assert diff_args.enable_rank_aggregation is True
+    assert diff_args.trace_aligned_out == "trace_aligned.json"
+    assert diff_args.trace_aligned_stack_out == "trace_aligned_stack.json"
 
 
 def test_troubleshooting_sections_present():
     readme = _compare_perf_readme_text()
 
     troubleshooting_match = re.search(
-        r"### 6\) 常见错误排查\n(?P<body>[\s\S]+)$",
+        r"### 7\) 常见错误排查\n(?P<body>[\s\S]+)$",
         readme,
     )
     assert troubleshooting_match is not None
