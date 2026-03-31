@@ -16,6 +16,9 @@ def log_or_print(content):
     else:
         print(content, flush=True)
 
+def log_and_print(content):
+    log2file(content)
+    print(content, flush=True)
 
 def ifdebug():
     return int(os.environ.get("TSJPRINT", 0)) == 1
@@ -39,7 +42,7 @@ def aprint(name, tensors,file_path=''):
             for tensor in tensors:
                 tprint(tensor, name)
         else:
-            print(name , type(tensors))
+            log_and_print(f"{name} , {type(tensors)}")
 
 def tprint(obj, name=""):
     if ifdebug():
@@ -53,15 +56,15 @@ def tprint(obj, name=""):
             mem_size=obj.element_size() * obj.numel() / 1024**3
             tmp_str1= f"'{name}'| {tensor_md5(obj)} | {origin_dtype} | {obj.shape} | continue: {obj.is_contiguous()} | mean {tmp_mean} | sum {obj.sum()} "
             tmp_str1+= f"| Size {obj.numel()} | Memory size: {mem_size:.2f} GB | isNan {torch.isnan(obj).any()}"
-            print(tmp_str1, flush=True)
+            log_and_print(tmp_str1)
             tmp_str2=obj.flatten()[:10].tolist()
-            print(tmp_str2, flush=True)
+            log_and_print(tmp_str2)
             return tmp_str1, tmp_str2
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
-            print(f"'{name}' is a nn.Module. |Total parameters: {total_params}")
+            log_and_print(f"'{name}' is a nn.Module. |Total parameters: {total_params}")
         else:
-            print(f"'{name}' {obj}")
+            log_and_print(f"'{name}' {obj}")
             # mean {obj.mean()} 
 
 # print part model weight

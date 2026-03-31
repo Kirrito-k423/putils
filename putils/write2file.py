@@ -29,6 +29,6 @@ def log2file(content, prefix=""):
 
     # 写入内容到文件（追加模式）
     with open(filename, "a", encoding="utf-8") as f:
-        f.write(content + "\n")
+        f.write(str(content) + "\n")
 
     # print(f"[LOG] Wrote to {filename}")  # 可选打印信息
