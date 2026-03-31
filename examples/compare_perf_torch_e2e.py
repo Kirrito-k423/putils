@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -29,13 +28,13 @@ except ImportError:
     nn = cast(Any, _NNStub())
     TORCH_AVAILABLE = False
 
+from putils.compare_perf import dump_compare_perf_snapshot
 from putils.compare_perf.align import align_modules
 from putils.compare_perf.collector import TimingCollector, compare_perf
 from putils.compare_perf.config import collect_runtime_metadata
 from putils.compare_perf.diff import compute_diff
 from putils.compare_perf.export import export_compare_result
 from putils.compare_perf.hooks import model_forward_timing
-from putils.compare_perf.schema import build_schema
 
 
 REGRESSION_SCOPE_NAME = "encoder.layer.1.mlp"
@@ -51,26 +50,6 @@ def _match_module_or_descendant(module_name: str, *, roots: set[str]) -> bool:
         if module_name == root or module_name.startswith(f"{root}."):
             return True
     return False
-
-
-def _collector_events_to_timeline_events(
-    *, collector: TimingCollector, process_name: str, pid: int
-) -> list[dict[str, Any]]:
-    timeline_events: list[dict[str, Any]] = []
-    for item in collector.events:
-        timeline_events.append(
-            {
-                "name": item.name,
-                "start_ns": item.start_ns,
-                "end_ns": item.end_ns,
-                "pid": pid,
-                "tid": 0,
-                "thread_name": "main",
-                "process_name": process_name,
-                "args": {"source": "torch_e2e_example"},
-            }
-        )
-    return timeline_events
 
 
 class SleepInjectedSequential(nn.Sequential):
@@ -145,7 +124,7 @@ class TinyTorchModel(nn.Module):
 def _run_training(
     *,
     tag: str,
-    output_path: Path,
+    output_dir: Path,
     model_state_dict: dict[str, Any],
     sleep_scope_name: str | None,
     sleep_seconds: float,
@@ -200,32 +179,21 @@ def _run_training(
                 with compare_perf("train.optimizer.step", collector=collector, threshold_seconds=1e-9):
                     optimizer.step()
 
-    timeline_events = _collector_events_to_timeline_events(
-        collector=collector,
-        process_name=tag,
-        pid=os.getpid(),
-    )
-
     run_metadata = collect_runtime_metadata()
     run_metadata["source"] = "compare_perf_torch_e2e_example"
-    run_metadata["tag"] = tag
     run_metadata["steps"] = int(steps)
     run_metadata["sleep_scope"] = sleep_scope_name
     run_metadata["sleep_seconds"] = float(sleep_seconds)
 
-    payload = build_schema(
-        events=timeline_events,
-        run_metadata=run_metadata,
-        alignment={
-            "matched": [],
-            "ambiguous": [],
-            "unmatched": {"left": [], "right": []},
-            "counts": {"matched": 0, "ambiguous": 0, "unmatched": 0},
-        },
-        summary=collector.summary,
+    snapshot_path = dump_compare_perf_snapshot(
+        collector=collector,
+        output_dir=output_dir,
+        step=steps,
+        tag=tag,
+        filename_template="{tag}.json",
+        run_metadata_extra=run_metadata,
     )
-    output_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
-    return payload
+    return json.loads(snapshot_path.read_text(encoding="utf-8"))
 
 
 def run_compare_perf_torch_e2e(
@@ -264,7 +232,7 @@ def run_compare_perf_torch_e2e(
 
     baseline_payload = _run_training(
         tag="baseline",
-        output_path=baseline_path,
+        output_dir=out_dir,
         model_state_dict=initial_state,
         sleep_scope_name=None,
         sleep_seconds=0.0,
@@ -275,7 +243,7 @@ def run_compare_perf_torch_e2e(
     )
     target_payload = _run_training(
         tag="target",
-        output_path=target_path,
+        output_dir=out_dir,
         model_state_dict=initial_state,
         sleep_scope_name=REGRESSION_SCOPE_NAME,
         sleep_seconds=sleep_seconds,

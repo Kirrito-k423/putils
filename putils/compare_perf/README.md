@@ -40,6 +40,8 @@ print(collector.summary)
 
 如果你想在训练中间查看结果，可以按 step 周期手动导出快照。下面示例每 10 step 导出一次，文件名包含 `step` 和 `tag`。
 
+注意: `dump_compare_perf_snapshot(...)` 默认落盘的是 compare_perf schema JSON（用于后续 diff/对比），不是 `chrome://tracing` 可直接识别的格式。
+
 ```python
 from putils.compare_perf import TimingCollector, compare_perf, dump_compare_perf_snapshot
 
@@ -64,9 +66,59 @@ for step in range(1, 51):
 
 ```
 
+如果你希望在同一次快照时额外生成可被 `chrome://tracing` 识别的中间文件，可以开启 sidecar:
+
+```python
+dump_compare_perf_snapshot(
+    collector=collector,
+    output_dir=output_dir,
+    step=step,
+    tag=tag,
+    chrome_trace_filename_template="trace_step_{step}_{tag}.trace.json",
+)
+```
+
 提示:
 - `threshold_seconds` 可能让 `events` 在某些 step 为空, 但 `summary` 仍会持续累积。
 - 中间快照是手动导出, 适合训练中途审阅趋势和回归信号。
+
+#### 为什么你可能只看到一层（例如只有 `train.step`）
+
+如果你只写了 `with compare_perf("train.step", ...)`，collector 只会记录这个 scope，本来就不会自动展开模型内部模块。
+
+要低侵入地采集模型内部模块（forward 树）事件，推荐在训练循环外层包一层 `model_forward_timing(...)`，并把 `threshold_seconds` 设得更小（例如 `1e-9`）。
+
+```python
+from putils.compare_perf import TimingCollector, compare_perf, model_forward_timing
+
+
+collector = TimingCollector(sync_mode="none")
+
+with model_forward_timing(
+    model,
+    collector=collector,
+    threshold_seconds=1e-9,
+    leaf_only=False,
+):
+    for step in range(steps):
+        with compare_perf("train.step", collector=collector, threshold_seconds=1e-9):
+            optimizer.zero_grad(set_to_none=True)
+            outputs = model(inputs)
+
+            # 当前建议仍显式包裹 backward/optimizer 相关阶段
+            with compare_perf("train.loss", collector=collector, threshold_seconds=1e-9):
+                loss = criterion(outputs, targets)
+            with compare_perf("train.backward", collector=collector, threshold_seconds=1e-9):
+                loss.backward()
+            with compare_perf("train.optimizer.step", collector=collector, threshold_seconds=1e-9):
+                optimizer.step()
+
+```
+
+补充说明:
+- `model_forward_timing(...)` 目前主要覆盖 forward 模块树。
+- backward/optimizer 阶段仍建议用显式 `compare_perf(...)` scope 标注。
+- 如果 `threshold_seconds=0.05` 这类阈值偏大，很多子模块事件会被过滤，只剩较粗粒度事件。
 
 ### 2) 参数与阈值解释
 

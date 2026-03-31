@@ -48,6 +48,15 @@ def test_torch_e2e_example_detects_sleep_regression(tmp_path):
     assert summary_json_path.exists()
     assert summary_md_path.exists()
 
+    baseline_payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+    target_payload = json.loads(target_path.read_text(encoding="utf-8"))
+    assert baseline_payload["run_metadata"]["tag"] == "baseline"
+    assert target_payload["run_metadata"]["tag"] == "target"
+    assert baseline_payload["run_metadata"]["source"] == "compare_perf_torch_e2e_example"
+    assert target_payload["run_metadata"]["source"] == "compare_perf_torch_e2e_example"
+    assert baseline_payload["run_metadata"]["step"] == 4
+    assert target_payload["run_metadata"]["step"] == 4
+
     summary = json.loads(summary_json_path.read_text(encoding="utf-8"))
     top_regressions = summary.get("top_regressions", [])
     regression_modules = {item.get("baseline_module") for item in top_regressions}

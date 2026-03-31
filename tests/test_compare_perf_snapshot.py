@@ -47,6 +47,37 @@ def test_dump_compare_perf_snapshot_writes_schema_payload(monkeypatch, tmp_path)
     assert event["inclusive_ns"] == 250_000_000
     assert event["exclusive_ns"] == 250_000_000
     assert "duration_ns" not in event
+    assert list(tmp_path.glob("*.trace.json")) == []
+
+
+def test_dump_compare_perf_snapshot_writes_optional_chrome_trace_sidecar(monkeypatch, tmp_path):
+    collector = TimingCollector(sync_mode="none")
+    tick_values = iter([1_500_000_000, 1_800_000_000])
+    monkeypatch.setattr(
+        "putils.compare_perf.collector.time.perf_counter_ns", lambda: next(tick_values)
+    )
+
+    with compare_perf("trace.step", collector=collector, threshold_seconds=1e-9):
+        pass
+
+    snapshot_path = dump_compare_perf_snapshot(
+        collector=collector,
+        output_dir=tmp_path,
+        step=12,
+        tag="target",
+        chrome_trace_filename_template="trace_step_{step}_{tag}.trace.json",
+    )
+
+    assert snapshot_path.exists()
+    sidecar_path = tmp_path / "trace_step_12_target.trace.json"
+    assert sidecar_path.exists()
+
+    trace_payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert "traceEvents" in trace_payload
+    assert isinstance(trace_payload["traceEvents"], list)
+    assert trace_payload["displayTimeUnit"] == "us"
+    assert any(item.get("ph") == "B" for item in trace_payload["traceEvents"])
+    assert any(item.get("ph") == "E" for item in trace_payload["traceEvents"])
 
 
 def test_dump_compare_perf_snapshot_supports_custom_filename_and_empty_events(monkeypatch, tmp_path):
@@ -72,6 +103,30 @@ def test_dump_compare_perf_snapshot_supports_custom_filename_and_empty_events(mo
     assert payload["events"] == []
     assert payload["summary"]["tiny.step"]["call_count"] == 1
     assert payload["summary"]["tiny.step"]["total_ns"] == 20_000_000
+
+
+def test_dump_compare_perf_snapshot_supports_run_metadata_extra(monkeypatch, tmp_path):
+    collector = TimingCollector(sync_mode="none")
+    tick_values = iter([3_000_000_000, 3_100_000_000])
+    monkeypatch.setattr(
+        "putils.compare_perf.collector.time.perf_counter_ns", lambda: next(tick_values)
+    )
+
+    with compare_perf("meta.step", collector=collector, threshold_seconds=1e-9):
+        pass
+
+    snapshot_path = dump_compare_perf_snapshot(
+        collector=collector,
+        output_dir=tmp_path,
+        step=7,
+        tag="baseline",
+        run_metadata_extra={"source": "unit_test", "tag": "should_be_overridden"},
+    )
+
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert payload["run_metadata"]["source"] == "unit_test"
+    assert payload["run_metadata"]["step"] == 7
+    assert payload["run_metadata"]["tag"] == "baseline"
 
 
 def test_dump_compare_perf_snapshot_rejects_invalid_collector(tmp_path):

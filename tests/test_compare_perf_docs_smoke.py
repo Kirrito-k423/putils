@@ -31,6 +31,9 @@ def test_compare_perf_docs_include_minimal_integration_examples():
     assert "output_dir=output_dir" in readme
     assert "step=step" in readme
     assert "tag=tag" in readme
+    assert "默认落盘的是 compare_perf schema JSON" in readme
+    assert "不是 `chrome://tracing` 可直接识别的格式" in readme
+    assert "chrome_trace_filename_template=\"trace_step_{step}_{tag}.trace.json\"" in readme
     assert "`threshold_seconds` 可能让 `events` 在某些 step 为空" in readme
     assert "### 8) 真实 Torch E2E 示例（前向+反向+优化器）" in readme
     assert "python3 examples/compare_perf_torch_e2e.py" in readme
@@ -39,6 +42,14 @@ def test_compare_perf_docs_include_minimal_integration_examples():
     assert "summary.json" in readme
     assert "top_regressions" in readme
     assert "encoder.layer.1.mlp" in readme
+    assert "为什么你可能只看到一层（例如只有 `train.step`）" in readme
+    assert "with compare_perf(\"train.step\", ...)" in readme
+    assert "model_forward_timing(" in readme
+    assert "leaf_only=False" in readme
+    assert "threshold_seconds=1e-9" in readme
+    assert "`model_forward_timing(...)` 目前主要覆盖 forward 模块树" in readme
+    assert "backward/optimizer 阶段仍建议用显式 `compare_perf(...)` scope 标注" in readme
+    assert "threshold_seconds=0.05" in readme
 
 
 def test_compare_perf_docs_collect_diff_workflow_matches_cli():
