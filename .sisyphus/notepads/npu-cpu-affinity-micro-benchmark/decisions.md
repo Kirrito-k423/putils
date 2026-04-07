@@ -1,0 +1,15 @@
+
+- 2026-04-01: Keep benchmark protocol contract centralized in `tools/npu_affinity_benchmark.py` via `build_schema`/`validate_schema` to avoid scattered schema checks.
+- 2026-04-01: Stabilize top-level schema names for downstream tasks as: `run_metadata`, `topology`, `candidates`, `results`, `leaderboards`, `failures`, `remeasure_events`.
+- 2026-04-01: Task-1 scope remains schema contract only; defer topology/bind/retry/export/CLI behavior to downstream plan items.
+- 2026-04-01: Represent runtime constraints in one unified topology object with explicit fields `online_cpus`, `nodes`, `process_affinity`, `effective_cpus`, `effective_mems`, and `effective_domain` for candidate generation reuse.
+- 2026-04-01: Classify empty effective CPU domain as structured error (`status=error`, `error.code=EMPTY_EFFECTIVE_CPUS`) instead of raising, to preserve machine-readable output in dry-run mode.
+- 2026-04-01: Profile caps are fixed in-code as `smoke=4`, `medium=12`, `full=64`, and candidate truncation uses deterministic ordered prefix to keep repeatable benchmark protocol.
+- 2026-04-01: Keep candidate payload minimal/stable (`candidate_id`, `cpu_list`) while deriving entries from effective domain + NUMA node intersections, avoiding hardcoded CPU assumptions.
+- 2026-04-01: Keep Task-4 implementation in tests only (no production changes), and establish reusable fixture primitives in `tests/test_npu_affinity_benchmark_retry.py` for upcoming bind/retry tasks.
+- 2026-04-01: Task-6 mixed workload uses fixed profile mapping (`matrix_size`/`iterations`/`transfer_bytes`) and default seed `20260401`, with `run_mixed_workload(profile, seed, ...)` returning structured machine-readable samples.
+- 2026-04-01: Torch-unavailable path is explicit and non-fatal (`status=skipped`, `reason=TORCH_UNAVAILABLE`, empty samples) to preserve protocol flow for environments without torch.
+- 2026-04-01: Task-5 bind chain is implemented as injected callables (`set_affinity`/`get_affinity`/optional `get_mems`) in `request_set_readback_affinity(...)` to keep kernel interaction deterministic and unit-testable.
+- 2026-04-01: Bind verification never trusts requested mask; `bind_status` is explicitly one of `ok|mismatch|error`, and mismatch samples are force-marked non-rankable via `mark_result_invalid_for_ranking_on_mismatch(...)`.
+- 2026-04-01: Task-7 baseline is sourced strictly from the same-run pair (`warmup`, `first_pass`) and encoded as per-metric min/max window under `baseline.source=same_run_warmup_first_pass`.
+- 2026-04-01: Task-7 retry contract is isolated in `evaluate_baseline_remeasure(...)` with explicit audit outputs (`remeasure_count`, `decision_status`, `decisions`) and bounded attempts via `max_remeasure_attempts`.

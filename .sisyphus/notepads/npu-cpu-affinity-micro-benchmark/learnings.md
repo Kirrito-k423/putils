@@ -1,0 +1,15 @@
+
+- 2026-04-01: Schema-first TDD works cleanly for this benchmark task: lock required top-level sections first, then validate nested `results[*].requested_affinity` and `results[*].effective_affinity` with explicit path-based errors.
+- 2026-04-01: QA hardening lesson: run `git status --short` before finalizing to catch out-of-scope file touches early and keep task scope clean.
+- 2026-04-01: Topology discovery should fuse runtime-visible constraints by intersecting `process_affinity ∩ online_cpus ∩ cpuset.cpus(.effective)`; this avoids assuming contiguous vCPU IDs and keeps effective domain truthful.
+- 2026-04-01: `--dry-run-topology` should still emit full schema payload (`raw_results.json`) so downstream tasks can consume `topology` section without special-case parsing.
+- 2026-04-01: Candidate generation is safer when driven by `effective_domain.cpus` first, then intersecting per-node cpulists; this keeps cross-NUMA combos valid under cpuset/runtime constraints.
+- 2026-04-01: Deterministic output is easiest by fixing generation order (single CPU → per-node group → cross-node unions → full-domain) and applying profile cap by stable prefix slicing.
+- 2026-04-01: For Task-4 test substrate, deterministic fixture factories should return fresh closures per call; this keeps repeated runs stable for topology reads, mock NPU inventory, and controlled clock ticks.
+- 2026-04-01: Fault injection in fixture layer is straightforward and reusable when modeled as a small action plan (`ok`/`EPERM`/`EINVAL`/`TIMEOUT`) with call history capture.
+- 2026-04-01: Reusing Task-4 fault injector directly for Task-5 bind-verify tests gives deterministic coverage of `EPERM`/`EINVAL`/`TIMEOUT` plus success path without requiring privileged affinity ops.
+- 2026-04-01: Separating exception classification (`classify_affinity_failure`) from bind execution (`request_set_readback_affinity`) keeps failure-code testing focused and avoids coupling tests to CLI/UI layers.
+- 2026-04-01: For deterministic workload tests, injecting a fake torch module and deterministic `now_ns` source is more stable than relying on real torch timing behavior.
+- 2026-04-01: Mixing compute (`matmul`) with transfer simulation (`clone` of flattened slice) provides a minimal workload abstraction that is benchmark-core friendly without adding task-7+ logic.
+- 2026-04-01: Deterministic ±10% threshold checks stay stable when evaluated against a baseline window expanded to `[min*(1-r), max*(1+r)]` for both throughput and latency.
+- 2026-04-01: Keeping retry logic as a pure evaluator function (no side effects, no device calls) makes protocol/retry tests fast and composable for downstream leaderboard/export tasks.
