@@ -32,26 +32,38 @@ def hookt(str, t):
                 t.register_hook(hook_tensor)
                 print(f"Tensor {str} force hook success.")
 
-def hook_for_model(model):
-    exclude = []
-    for i in range(24):
-        exclude.append(f"image_encoder.encoder.blocks.layers.{i}.cross_attention")
-        exclude.append(f"image_encoder.encoder.blocks.layers.{i}.cross_attn_bda")
-        
-    for i in range(40):
-        exclude.append(f"text_decoder.decoder.layers.{i}.cross_attention")
-        exclude.append(f"text_decoder.decoder.layers.{i}.cross_attn_bda")
+def _normalize_include_list(include_list):
+    if include_list is None:
+        return set()
+    if isinstance(include_list, str):
+        include_list = [include_list]
+    return {str(name).strip() for name in include_list if str(name).strip()}
 
-    if ifdebug():
-        rank = 0
-        # print(f"hook_for_model record rank {rank}")
-        # if rank == record_rank:
-        for name, module in model.named_modules():
-            if name.startswith('image_encoder.encoder.blocks.'):
-                continue
-            if name.startswith('text_decoder.decoder.layers.'):
-                continue
-            if name not in exclude:
-                print(name)
-                module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log"))
-                module.register_full_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log"))
+
+def hook_for_model(model, include_list=None):
+    if not ifdebug():
+        return []
+
+    include_set = _normalize_include_list(include_list)
+    if not include_set:
+        print("hook_for_model skipped: include_list is empty.")
+        return []
+
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    handles = []
+    matched_modules = []
+
+    for name, module in model.named_modules():
+        if name not in include_set:
+            continue
+
+        matched_modules.append(name)
+        print(f"hook_for_model register {name}")
+        handles.append(module.register_forward_hook(hook_func('[forward]: '+name, module, f"{rank}.log")))
+        handles.append(module.register_full_backward_hook(hook_func('[backward]: '+name, module, f"{rank}.log")))
+
+    missing_modules = sorted(include_set - set(matched_modules))
+    for name in missing_modules:
+        print(f"hook_for_model skip missing module: {name}")
+
+    return handles
