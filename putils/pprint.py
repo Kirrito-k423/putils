@@ -53,8 +53,12 @@ def tprint(obj, name=""):
                 tmp_mean = obj.mean()
             except Exception as e:
                 tmp_mean = e
+            try:
+                tmp_l1_norm = obj.abs().sum()
+            except Exception as e:
+                tmp_l1_norm = e
             mem_size=obj.element_size() * obj.numel() / 1024**3
-            tmp_str1= f"'{name}'| {tensor_md5(obj)} | {origin_dtype} | {obj.shape} | continue: {obj.is_contiguous()} | mean {tmp_mean} | sum {obj.sum()} "
+            tmp_str1= f"'{name}'| l1_norm {tmp_l1_norm} | {tensor_md5(obj)} | {origin_dtype} | {obj.shape} | continue: {obj.is_contiguous()} | mean {tmp_mean} | sum {obj.sum()} "
             tmp_str1+= f"| Size {obj.numel()} | Memory size: {mem_size:.2f} GB | isNan {torch.isnan(obj).any()}"
             log_and_print(tmp_str1)
             tmp_str2=obj.flatten()[:10].tolist()
