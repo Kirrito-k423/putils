@@ -6,7 +6,7 @@
 输出包含 3 个工作表：
 1) base_parsed：base 日志解析结果
 2) target_parsed：target 日志解析结果
-3) comparison：同名项对比（hash/shape/mean/sum）
+3) comparison：同名项对比（hash/shape/l1_norm/mean/sum）
 """
 
 import argparse
@@ -23,6 +23,7 @@ from openpyxl import Workbook
 
 HEADER_RE = re.compile(
     r"^'(?P<name>[^']+)'\|\s*"
+    r"(?:l1_norm\s+(?P<l1_norm>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*\|\s*)?"
     r"(?P<hash>[^|]+?)\s*\|\s*"
     r"(?P<dtype>[^|]+?)\s*\|\s*"
     r"(?P<shape>torch\.Size\([^)]*\))\s*\|\s*"
@@ -38,6 +39,7 @@ HEADER_RE = re.compile(
 @dataclass
 class HookEntry:
     name: str
+    l1_norm: float | None
     hash_value: str
     dtype: str
     shape: str
@@ -82,6 +84,7 @@ def parse_hook_log(log_path: Path) -> list[HookEntry]:
         entries.append(
             HookEntry(
                 name=match.group("name"),
+                l1_norm=float(match.group("l1_norm")) if match.group("l1_norm") is not None else None,
                 hash_value=match.group("hash").strip(),
                 dtype=match.group("dtype").strip(),
                 shape=match.group("shape").strip(),
@@ -132,9 +135,14 @@ def build_comparison_rows(
             target_mean = target_item.mean if target_item else None
             base_sum = base_item.sum_value if base_item else None
             target_sum = target_item.sum_value if target_item else None
+            base_l1_norm = base_item.l1_norm if base_item else None
+            target_l1_norm = target_item.l1_norm if target_item else None
 
+            l1_norm_diff_pct = None
             mean_diff_pct = None
             sum_diff_pct = None
+            if base_l1_norm is not None and target_l1_norm is not None:
+                l1_norm_diff_pct = _diff_pct(base_l1_norm, target_l1_norm)
             if base_mean is not None and target_mean is not None:
                 mean_diff_pct = _diff_pct(base_mean, target_mean)
             if base_sum is not None and target_sum is not None:
@@ -147,6 +155,9 @@ def build_comparison_rows(
                     if (base_item and target_item)
                     else False,
                     (base_item.shape == target_item.shape) if (base_item and target_item) else False,
+                    base_l1_norm,
+                    target_l1_norm,
+                    l1_norm_diff_pct,
                     base_mean,
                     target_mean,
                     mean_diff_pct,
@@ -175,6 +186,9 @@ def build_comparison_rows(
                     False,
                     False,
                     None,
+                    target_item.l1_norm,
+                    None,
+                    None,
                     target_item.mean,
                     None,
                     None,
@@ -198,6 +212,7 @@ def _write_parsed_sheet(workbook: Workbook, sheet_name: str, entries: list[HookE
             "hash",
             "dtype",
             "shape",
+            "l1_norm",
             "mean",
             "sum",
             "size",
@@ -213,6 +228,7 @@ def _write_parsed_sheet(workbook: Workbook, sheet_name: str, entries: list[HookE
                 entry.hash_value,
                 entry.dtype,
                 entry.shape,
+                entry.l1_norm,
                 entry.mean,
                 entry.sum_value,
                 entry.size,
@@ -229,6 +245,9 @@ def _write_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) -> None:
             "name",
             "hash_match",
             "shape_match",
+            "base_l1_norm",
+            "target_l1_norm",
+            "l1_norm_diff_pct",
             "base_mean",
             "target_mean",
             "mean_diff_pct",

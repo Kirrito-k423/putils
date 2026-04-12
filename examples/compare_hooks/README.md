@@ -19,7 +19,7 @@ python examples/compare_hooks/parse_hooks_to_excel.py \
 
 1. `base_parsed`
    - base 日志解析结果
-   - 列：`name, hash, dtype, shape, mean, sum, size, is_nan, tensor_preview`
+   - 列：`name, hash, dtype, shape, l1_norm, mean, sum, size, is_nan, tensor_preview`
 
 2. `target_parsed`
    - target 日志解析结果
@@ -31,6 +31,9 @@ python examples/compare_hooks/parse_hooks_to_excel.py \
      - `name`
      - `hash_match`
      - `shape_match`
+     - `base_l1_norm`
+     - `target_l1_norm`
+     - `l1_norm_diff_pct`
      - `base_mean`
      - `target_mean`
      - `mean_diff_pct`
@@ -44,11 +47,13 @@ python examples/compare_hooks/parse_hooks_to_excel.py \
 
 ## 差异百分比公式
 
+- `l1_norm_diff_pct = abs(base_l1_norm - target_l1_norm) / max(abs(base_l1_norm), abs(target_l1_norm), 1e-10) * 100`
 - `mean_diff_pct = abs(base_mean - target_mean) / max(abs(base_mean), abs(target_mean), 1e-10) * 100`
 - `sum_diff_pct = abs(base_sum - target_sum) / max(abs(base_sum), abs(target_sum), 1e-10) * 100`
 
 ## 解析规则
 
+- 兼容旧格式头行，以及新格式头行（在 hash 前新增 `l1_norm <value>`）。
 - 仅解析标准头行 + 下一行预览数组格式。
 - 遇到大 tensor 多行打印（如 `tensor([...])`）会自动跳过。
 - 仅保留预览数组前 10 个元素写入 `tensor_preview`。
