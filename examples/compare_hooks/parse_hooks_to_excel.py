@@ -41,6 +41,8 @@ HEADER_RE = re.compile(
     r"continue:\s*(?:True|False)\s*\|\s*"
     r"mean\s+(?P<mean>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*\|\s*"
     r"sum\s+(?P<sum>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*\|\s*"
+    r"(?:max\s+(?P<max_val>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*\|\s*)?"
+    r"(?:min\s+(?P<min_val>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*\|\s*)?"
     r"Size\s+(?P<size>\d+)\s*\|\s*"
     r"Memory size:\s*[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\s*GB\s*\|\s*"
     r"isNan\s+(?P<is_nan>True|False)\s*$"
@@ -56,6 +58,8 @@ class HookEntry:
     shape: str
     mean: float
     sum_value: float
+    max_value: float | None
+    min_value: float | None
     size: int
     is_nan: bool
     tensor_preview: list[Any]
@@ -101,6 +105,8 @@ def parse_hook_log(log_path: Path) -> list[HookEntry]:
                 shape=match.group("shape").strip(),
                 mean=float(match.group("mean")),
                 sum_value=float(match.group("sum")),
+                max_value=float(match.group("max_val")) if match.group("max_val") is not None else None,
+                min_value=float(match.group("min_val")) if match.group("min_val") is not None else None,
                 size=int(match.group("size")),
                 is_nan=match.group("is_nan") == "True",
                 tensor_preview=preview,
@@ -164,12 +170,18 @@ def build_comparison_rows(
             l1_norm_diff_pct = None
             mean_diff_pct = None
             sum_diff_pct = None
+            max_diff_pct = None
+            min_diff_pct = None
             if base_item.l1_norm is not None and target_item.l1_norm is not None:
                 l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
             if base_item.mean is not None and target_item.mean is not None:
                 mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
             if base_item.sum_value is not None and target_item.sum_value is not None:
                 sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
+            if base_item.max_value is not None and target_item.max_value is not None:
+                max_diff_pct = _diff_pct(base_item.max_value, target_item.max_value)
+            if base_item.min_value is not None and target_item.min_value is not None:
+                min_diff_pct = _diff_pct(base_item.min_value, target_item.min_value)
 
             rows.append(
                 [
@@ -189,6 +201,12 @@ def build_comparison_rows(
                     base_item.sum_value,
                     target_item.sum_value,
                     sum_diff_pct,
+                    base_item.max_value,
+                    target_item.max_value,
+                    max_diff_pct,
+                    base_item.min_value,
+                    target_item.min_value,
+                    min_diff_pct,
                     base_item.hash_value,
                     target_item.hash_value,
                     base_item.shape,
@@ -213,6 +231,12 @@ def build_comparison_rows(
                 None,
                 None,
                 base_item.sum_value,
+                None,
+                None,
+                base_item.max_value,
+                None,
+                None,
+                base_item.min_value,
                 None,
                 None,
                 base_item.hash_value,
@@ -243,6 +267,12 @@ def build_comparison_rows(
                 None,
                 target_item.sum_value,
                 None,
+                None,
+                target_item.max_value,
+                None,
+                None,
+                target_item.min_value,
+                None,
                 "",
                 target_item.hash_value,
                 "",
@@ -264,6 +294,8 @@ def _write_parsed_sheet(workbook: Workbook, sheet_name: str, entries: list[HookE
             "l1_norm",
             "mean",
             "sum",
+            "max",
+            "min",
             "size",
             "is_nan",
             "tensor_preview",
@@ -280,6 +312,8 @@ def _write_parsed_sheet(workbook: Workbook, sheet_name: str, entries: list[HookE
                 entry.l1_norm,
                 entry.mean,
                 entry.sum_value,
+                entry.max_value,
+                entry.min_value,
                 entry.size,
                 entry.is_nan,
                 json.dumps(entry.tensor_preview, ensure_ascii=False),
@@ -334,6 +368,12 @@ def _write_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) -> None:
             "base_sum",
             "target_sum",
             "sum_diff_pct",
+            "base_max",
+            "target_max",
+            "max_diff_pct",
+            "base_min",
+            "target_min",
+            "min_diff_pct",
             "base_hash",
             "target_hash",
             "base_shape",
@@ -429,12 +469,18 @@ def build_mapped_comparison_rows(
         l1_norm_diff_pct = None
         mean_diff_pct = None
         sum_diff_pct = None
+        max_diff_pct = None
+        min_diff_pct = None
         if base_item.l1_norm is not None and target_item.l1_norm is not None:
             l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
         if base_item.mean is not None and target_item.mean is not None:
             mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
         if base_item.sum_value is not None and target_item.sum_value is not None:
             sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
+        if base_item.max_value is not None and target_item.max_value is not None:
+            max_diff_pct = _diff_pct(base_item.max_value, target_item.max_value)
+        if base_item.min_value is not None and target_item.min_value is not None:
+            min_diff_pct = _diff_pct(base_item.min_value, target_item.min_value)
 
         rows.append(
             [
@@ -453,6 +499,12 @@ def build_mapped_comparison_rows(
                 base_item.sum_value,
                 target_item.sum_value,
                 sum_diff_pct,
+                base_item.max_value,
+                target_item.max_value,
+                max_diff_pct,
+                base_item.min_value,
+                target_item.min_value,
+                min_diff_pct,
                 base_item.hash_value,
                 target_item.hash_value,
                 base_item.shape,
@@ -482,6 +534,12 @@ def _write_mapped_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) ->
             "base_sum",
             "target_sum",
             "sum_diff_pct",
+            "base_max",
+            "target_max",
+            "max_diff_pct",
+            "base_min",
+            "target_min",
+            "min_diff_pct",
             "base_hash",
             "target_hash",
             "base_shape",
