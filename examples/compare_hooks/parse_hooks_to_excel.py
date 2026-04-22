@@ -117,6 +117,31 @@ def parse_hook_log(log_path: Path) -> list[HookEntry]:
     return entries
 
 
+def _shape_similarity(base_shape: str, target_shape: str) -> int:
+    base_dims = base_shape.replace("torch.Size([", "").rstrip("])").split(", ")
+    target_dims = target_shape.replace("torch.Size([", "").rstrip("])").split(", ")
+    if base_dims == target_dims:
+        return 0
+    base_set = set(base_dims)
+    target_set = set(target_dims)
+    if base_set == target_set:
+        return 1
+    if base_set & target_set:
+        return 2
+    return 3
+
+
+def _stat_distance(base_item: HookEntry, target_item: HookEntry) -> float:
+    dist = 0.0
+    if base_item.l1_norm is not None and target_item.l1_norm is not None:
+        dist += _diff_pct(base_item.l1_norm, target_item.l1_norm)
+    if base_item.mean is not None and target_item.mean is not None:
+        dist += _diff_pct(base_item.mean, target_item.mean)
+    if base_item.sum_value is not None and target_item.sum_value is not None:
+        dist += _diff_pct(base_item.sum_value, target_item.sum_value)
+    return dist
+
+
 def _diff_pct(base_val: float, target_val: float) -> float:
     denominator = max(abs(base_val), abs(target_val), 1e-10)
     return abs(base_val - target_val) / denominator * 100.0
@@ -135,44 +160,37 @@ def build_comparison_rows(
     for idx, entry in enumerate(target_entries):
         target_name_to_indices.setdefault(entry.name, []).append(idx)
 
-    target_cursor: dict[str, int] = {name: 0 for name in target_name_to_indices}
-
-    def _try_match(name: str, base_size: int | None = None) -> tuple[int, Any] | None:
+    def _try_match(name: str, base_item: HookEntry) -> tuple[int, Any] | None:
         indices = target_name_to_indices.get(name)
         if indices is None:
             return None
-        cursor = target_cursor[name]
-        while cursor < len(indices) and indices[cursor] in target_used:
-            cursor += 1
-        target_cursor[name] = cursor
-        if cursor >= len(indices):
+
+        candidates: list[tuple[int, int, float]] = []
+        for idx in indices:
+            if idx in target_used:
+                continue
+            if base_item.size is not None and target_entries[idx].size != base_item.size:
+                continue
+            shape_rank = _shape_similarity(base_item.shape, target_entries[idx].shape)
+            stat_dist = _stat_distance(base_item, target_entries[idx])
+            candidates.append((idx, shape_rank, stat_dist))
+
+        if not candidates:
             return None
 
-        scan = cursor
-        while scan < len(indices):
-            if indices[scan] in target_used:
-                scan += 1
-                continue
-            if base_size is not None and target_entries[indices[scan]].size != base_size:
-                scan += 1
-                continue
-            break
-
-        if scan >= len(indices):
-            return None
-
-        target_row = indices[scan]
+        candidates.sort(key=lambda c: (c[1], c[2]))
+        target_row = candidates[0][0]
         target_used.add(target_row)
         return target_row, target_entries[target_row]
 
     for base_row, base_item in enumerate(base_entries):
-        matched = _try_match(base_item.name, base_item.size)
+        matched = _try_match(base_item.name, base_item)
 
         match_type = "same_name"
         target_name = base_item.name
         if matched is None and mapping_rules:
             for resolved in _resolve_target_names(base_item.name, mapping_rules):
-                matched = _try_match(resolved, base_item.size)
+                matched = _try_match(resolved, base_item)
                 if matched is not None:
                     match_type = "mapped"
                     target_name = resolved
@@ -454,8 +472,6 @@ def build_mapped_comparison_rows(
     for idx, entry in enumerate(target_entries):
         target_name_to_indices.setdefault(entry.name, []).append(idx)
 
-    target_cursor: dict[str, int] = {name: 0 for name in target_name_to_indices}
-
     rows: list[list[Any]] = []
 
     for base_row, base_item in enumerate(base_entries):
@@ -465,30 +481,23 @@ def build_mapped_comparison_rows(
             if indices is None:
                 continue
 
-            cursor = target_cursor[target_name]
-            while cursor < len(indices) and indices[cursor] in target_used:
-                cursor += 1
-            target_cursor[target_name] = cursor
-            if cursor >= len(indices):
+            candidates: list[tuple[int, int, float]] = []
+            for idx in indices:
+                if idx in target_used:
+                    continue
+                if base_item.size != target_entries[idx].size:
+                    continue
+                shape_rank = _shape_similarity(base_item.shape, target_entries[idx].shape)
+                stat_dist = _stat_distance(base_item, target_entries[idx])
+                candidates.append((idx, shape_rank, stat_dist))
+
+            if not candidates:
                 continue
 
-            scan = cursor
-            while scan < len(indices):
-                if indices[scan] in target_used:
-                    scan += 1
-                    continue
-                if base_item.size != target_entries[indices[scan]].size:
-                    scan += 1
-                    continue
-                break
-
-            if scan >= len(indices):
-                continue
-
-            target_row = indices[scan]
+            candidates.sort(key=lambda c: (c[1], c[2]))
+            target_row = candidates[0][0]
             target_used.add(target_row)
             matched_target = (target_name, target_row, target_entries[target_row])
-            target_cursor[target_name] = cursor + 1
             break
 
         if matched_target is None:
