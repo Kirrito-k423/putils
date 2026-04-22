@@ -147,12 +147,164 @@ def _diff_pct(base_val: float, target_val: float) -> float:
     return abs(base_val - target_val) / denominator * 100.0
 
 
+def _make_row_matched(
+    base_item: HookEntry, base_row: int,
+    target_item: HookEntry, target_row: int,
+    target_name: str, match_type: str,
+) -> list[Any]:
+    l1_norm_diff_pct = None
+    mean_diff_pct = None
+    sum_diff_pct = None
+    max_diff_pct = None
+    min_diff_pct = None
+    if base_item.l1_norm is not None and target_item.l1_norm is not None:
+        l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
+    if base_item.mean is not None and target_item.mean is not None:
+        mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
+    if base_item.sum_value is not None and target_item.sum_value is not None:
+        sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
+    if base_item.max_value is not None and target_item.max_value is not None:
+        max_diff_pct = _diff_pct(base_item.max_value, target_item.max_value)
+    if base_item.min_value is not None and target_item.min_value is not None:
+        min_diff_pct = _diff_pct(base_item.min_value, target_item.min_value)
+
+    return [
+        base_item.name,
+        target_name,
+        match_type,
+        base_row + 1,
+        target_row + 1,
+        base_item.hash_value == target_item.hash_value,
+        base_item.shape == target_item.shape,
+        base_item.l1_norm,
+        target_item.l1_norm,
+        l1_norm_diff_pct,
+        base_item.mean,
+        target_item.mean,
+        mean_diff_pct,
+        base_item.sum_value,
+        target_item.sum_value,
+        sum_diff_pct,
+        base_item.max_value,
+        target_item.max_value,
+        max_diff_pct,
+        base_item.min_value,
+        target_item.min_value,
+        min_diff_pct,
+        base_item.hash_value,
+        target_item.hash_value,
+        base_item.shape,
+        target_item.shape,
+    ]
+
+
+def _make_row_base_only(base_item: HookEntry, base_row: int) -> list[Any]:
+    return [
+        base_item.name,
+        base_item.name,
+        "unmatched",
+        base_row + 1,
+        None,
+        False,
+        False,
+        base_item.l1_norm,
+        None,
+        None,
+        base_item.mean,
+        None,
+        None,
+        base_item.sum_value,
+        None,
+        None,
+        base_item.max_value,
+        None,
+        None,
+        base_item.min_value,
+        None,
+        None,
+        base_item.hash_value,
+        "",
+        base_item.shape,
+        "",
+    ]
+
+
+def _make_row_target_only(target_item: HookEntry, target_row: int) -> list[Any]:
+    return [
+        target_item.name,
+        target_item.name,
+        "unmatched",
+        None,
+        target_row + 1,
+        False,
+        False,
+        None,
+        target_item.l1_norm,
+        None,
+        None,
+        target_item.mean,
+        None,
+        None,
+        target_item.sum_value,
+        None,
+        None,
+        target_item.max_value,
+        None,
+        None,
+        target_item.min_value,
+        None,
+        "",
+        target_item.hash_value,
+        "",
+        target_item.shape,
+    ]
+
+
+def _optimal_match_group(
+    base_indices: list[int],
+    base_entries: list[HookEntry],
+    candidate_targets: list[tuple[int, str, str]],
+    target_entries: list[HookEntry],
+    target_used: set[int],
+) -> list[tuple[int, int, str, str] | None]:
+    """对一组同名 base 条目，在候选 target 中做全局最优配对。
+
+    Returns:
+        长度=len(base_indices)，每个元素为 (base_idx, target_idx, target_name, match_type) 或 None
+    """
+    pairs: list[tuple[float, int, int, str, str]] = []
+    for bi, base_idx in enumerate(base_indices):
+        base_item = base_entries[base_idx]
+        for target_idx, target_name, match_type in candidate_targets:
+            if target_idx in target_used:
+                continue
+            if base_item.size != target_entries[target_idx].size:
+                continue
+            shape_rank = _shape_similarity(base_item.shape, target_entries[target_idx].shape)
+            stat_dist = _stat_distance(base_item, target_entries[target_idx])
+            pairs.append((shape_rank * 1e6 + stat_dist, bi, target_idx, target_name, match_type))
+
+    pairs.sort(key=lambda p: p[0])
+
+    base_assigned: set[int] = set()
+    result: list[tuple[int, int, str, str] | None] = [None] * len(base_indices)
+
+    for _, bi, target_idx, target_name, match_type in pairs:
+        if bi in base_assigned or target_idx in target_used:
+            continue
+        result[bi] = (base_indices[bi], target_idx, target_name, match_type)
+        base_assigned.add(bi)
+        target_used.add(target_idx)
+
+    return result
+
+
 def build_comparison_rows(
     base_entries: list[HookEntry],
     target_entries: list[HookEntry],
     mapping_rules: list[dict[str, str]] | None = None,
 ) -> list[list[Any]]:
-    """双指针顺序遍历 base 和 target，先尝试同名匹配，再尝试映射匹配。"""
+    """对同名/映射名分组做全局最优配对，shape优先+统计值相似度。"""
     rows: list[list[Any]] = []
 
     target_used: set[int] = set()
@@ -160,156 +312,50 @@ def build_comparison_rows(
     for idx, entry in enumerate(target_entries):
         target_name_to_indices.setdefault(entry.name, []).append(idx)
 
-    def _try_match(name: str, base_item: HookEntry) -> tuple[int, Any] | None:
-        indices = target_name_to_indices.get(name)
-        if indices is None:
-            return None
+    def _get_candidate_targets(base_name: str) -> list[tuple[int, str, str]]:
+        seen: set[int] = set()
+        result: list[tuple[int, str, str]] = []
+        names_to_try = [(base_name, "same_name")]
+        if mapping_rules:
+            for resolved in _resolve_target_names(base_name, mapping_rules):
+                names_to_try.append((resolved, "mapped"))
+        for name, mtype in names_to_try:
+            for idx in target_name_to_indices.get(name, []):
+                if idx not in seen:
+                    seen.add(idx)
+                    result.append((idx, name, mtype))
+        return result
 
-        candidates: list[tuple[int, int, float]] = []
-        for idx in indices:
-            if idx in target_used:
-                continue
-            if base_item.size is not None and target_entries[idx].size != base_item.size:
-                continue
-            shape_rank = _shape_similarity(base_item.shape, target_entries[idx].shape)
-            stat_dist = _stat_distance(base_item, target_entries[idx])
-            candidates.append((idx, shape_rank, stat_dist))
+    i = 0
+    while i < len(base_entries):
+        group_start = i
+        group_name = base_entries[i].name
+        while i < len(base_entries) and base_entries[i].name == group_name:
+            i += 1
+        group_base_indices = list(range(group_start, i))
 
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda c: (c[1], c[2]))
-        target_row = candidates[0][0]
-        target_used.add(target_row)
-        return target_row, target_entries[target_row]
-
-    for base_row, base_item in enumerate(base_entries):
-        matched = _try_match(base_item.name, base_item)
-
-        match_type = "same_name"
-        target_name = base_item.name
-        if matched is None and mapping_rules:
-            for resolved in _resolve_target_names(base_item.name, mapping_rules):
-                matched = _try_match(resolved, base_item)
-                if matched is not None:
-                    match_type = "mapped"
-                    target_name = resolved
-                    break
-
-        if matched is not None:
-            target_row, target_item = matched
-            l1_norm_diff_pct = None
-            mean_diff_pct = None
-            sum_diff_pct = None
-            max_diff_pct = None
-            min_diff_pct = None
-            if base_item.l1_norm is not None and target_item.l1_norm is not None:
-                l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
-            if base_item.mean is not None and target_item.mean is not None:
-                mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
-            if base_item.sum_value is not None and target_item.sum_value is not None:
-                sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
-            if base_item.max_value is not None and target_item.max_value is not None:
-                max_diff_pct = _diff_pct(base_item.max_value, target_item.max_value)
-            if base_item.min_value is not None and target_item.min_value is not None:
-                min_diff_pct = _diff_pct(base_item.min_value, target_item.min_value)
-
-            rows.append(
-                [
-                    base_item.name,
-                    target_name,
-                    match_type,
-                    base_row + 1,
-                    target_row + 1,
-                    base_item.hash_value == target_item.hash_value,
-                    base_item.shape == target_item.shape,
-                    base_item.l1_norm,
-                    target_item.l1_norm,
-                    l1_norm_diff_pct,
-                    base_item.mean,
-                    target_item.mean,
-                    mean_diff_pct,
-                    base_item.sum_value,
-                    target_item.sum_value,
-                    sum_diff_pct,
-                    base_item.max_value,
-                    target_item.max_value,
-                    max_diff_pct,
-                    base_item.min_value,
-                    target_item.min_value,
-                    min_diff_pct,
-                    base_item.hash_value,
-                    target_item.hash_value,
-                    base_item.shape,
-                    target_item.shape,
-                ]
-            )
-            continue
-
-        rows.append(
-            [
-                base_item.name,
-                base_item.name,
-                "unmatched",
-                base_row + 1,
-                None,
-                False,
-                False,
-                base_item.l1_norm,
-                None,
-                None,
-                base_item.mean,
-                None,
-                None,
-                base_item.sum_value,
-                None,
-                None,
-                base_item.max_value,
-                None,
-                None,
-                base_item.min_value,
-                None,
-                None,
-                base_item.hash_value,
-                "",
-                base_item.shape,
-                "",
-            ]
+        candidate_targets = _get_candidate_targets(group_name)
+        match_results = _optimal_match_group(
+            group_base_indices, base_entries, candidate_targets, target_entries, target_used
         )
+
+        for j, result in enumerate(match_results):
+            if result is not None:
+                base_idx, target_idx, target_name, match_type = result
+                rows.append(_make_row_matched(
+                    base_entries[base_idx], base_idx,
+                    target_entries[target_idx], target_idx,
+                    target_name, match_type,
+                ))
+            else:
+                rows.append(_make_row_base_only(
+                    base_entries[group_base_indices[j]], group_base_indices[j]
+                ))
 
     for target_row, target_item in enumerate(target_entries):
         if target_row in target_used:
             continue
-        rows.append(
-            [
-                target_item.name,
-                target_item.name,
-                "unmatched",
-                None,
-                target_row + 1,
-                False,
-                False,
-                None,
-                target_item.l1_norm,
-                None,
-                None,
-                target_item.mean,
-                None,
-                None,
-                target_item.sum_value,
-                None,
-                None,
-                target_item.max_value,
-                None,
-                None,
-                target_item.min_value,
-                None,
-                "",
-                target_item.hash_value,
-                "",
-                target_item.shape,
-            ]
-        )
+        rows.append(_make_row_target_only(target_item, target_row))
 
     return rows
 
@@ -474,82 +520,34 @@ def build_mapped_comparison_rows(
 
     rows: list[list[Any]] = []
 
-    for base_row, base_item in enumerate(base_entries):
-        matched_target = None
-        for target_name in _resolve_target_names(base_item.name, mapping_rules):
-            indices = target_name_to_indices.get(target_name)
-            if indices is None:
-                continue
+    i = 0
+    while i < len(base_entries):
+        group_start = i
+        group_name = base_entries[i].name
+        while i < len(base_entries) and base_entries[i].name == group_name:
+            i += 1
+        group_base_indices = list(range(group_start, i))
 
-            candidates: list[tuple[int, int, float]] = []
-            for idx in indices:
-                if idx in target_used:
-                    continue
-                if base_item.size != target_entries[idx].size:
-                    continue
-                shape_rank = _shape_similarity(base_item.shape, target_entries[idx].shape)
-                stat_dist = _stat_distance(base_item, target_entries[idx])
-                candidates.append((idx, shape_rank, stat_dist))
+        seen: set[int] = set()
+        candidate_targets: list[tuple[int, str, str]] = []
+        for target_name in _resolve_target_names(group_name, mapping_rules):
+            for idx in target_name_to_indices.get(target_name, []):
+                if idx not in seen:
+                    seen.add(idx)
+                    candidate_targets.append((idx, target_name, "mapped"))
 
-            if not candidates:
-                continue
-
-            candidates.sort(key=lambda c: (c[1], c[2]))
-            target_row = candidates[0][0]
-            target_used.add(target_row)
-            matched_target = (target_name, target_row, target_entries[target_row])
-            break
-
-        if matched_target is None:
-            continue
-
-        target_name, target_row, target_item = matched_target
-
-        l1_norm_diff_pct = None
-        mean_diff_pct = None
-        sum_diff_pct = None
-        max_diff_pct = None
-        min_diff_pct = None
-        if base_item.l1_norm is not None and target_item.l1_norm is not None:
-            l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
-        if base_item.mean is not None and target_item.mean is not None:
-            mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
-        if base_item.sum_value is not None and target_item.sum_value is not None:
-            sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
-        if base_item.max_value is not None and target_item.max_value is not None:
-            max_diff_pct = _diff_pct(base_item.max_value, target_item.max_value)
-        if base_item.min_value is not None and target_item.min_value is not None:
-            min_diff_pct = _diff_pct(base_item.min_value, target_item.min_value)
-
-        rows.append(
-            [
-                base_item.name,
-                target_name,
-                base_row + 1,
-                target_row + 1,
-                base_item.hash_value == target_item.hash_value,
-                base_item.shape == target_item.shape,
-                base_item.l1_norm,
-                target_item.l1_norm,
-                l1_norm_diff_pct,
-                base_item.mean,
-                target_item.mean,
-                mean_diff_pct,
-                base_item.sum_value,
-                target_item.sum_value,
-                sum_diff_pct,
-                base_item.max_value,
-                target_item.max_value,
-                max_diff_pct,
-                base_item.min_value,
-                target_item.min_value,
-                min_diff_pct,
-                base_item.hash_value,
-                target_item.hash_value,
-                base_item.shape,
-                target_item.shape,
-            ]
+        match_results = _optimal_match_group(
+            group_base_indices, base_entries, candidate_targets, target_entries, target_used
         )
+
+        for j, result in enumerate(match_results):
+            if result is not None:
+                base_idx, target_idx, target_name, match_type = result
+                rows.append(_make_row_matched(
+                    base_entries[base_idx], base_idx,
+                    target_entries[target_idx], target_idx,
+                    target_name, match_type,
+                ))
 
     return rows
 
