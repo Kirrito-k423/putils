@@ -558,6 +558,7 @@ def _write_mapped_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) ->
         [
             "base_name",
             "target_name",
+            "match_type",
             "base_row",
             "target_row",
             "hash_match",
