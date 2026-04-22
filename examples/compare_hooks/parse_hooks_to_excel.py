@@ -2,7 +2,7 @@
 
 命令行：
     python parse_hooks_to_excel.py --base-log <base.log> --target-log <target.log> --output <result.xlsx>
-    python parse_hooks_to_excel.py --base-log <base.log> --target-log <target.log> --output <result.xlsx> --mapping <map.json>
+    python parse_hooks_to_excel.py --base-log <base.log> --target-log <target.log> --output <result.xlsx> --mapping <map1.json> <map2.json>
 
 输出包含 3~4 个工作表：
 1) base_parsed：base 日志解析结果
@@ -500,7 +500,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-log", required=True, help="基准日志文件路径")
     parser.add_argument("--target-log", required=True, help="目标日志文件路径")
     parser.add_argument("--output", required=True, help="输出 Excel 文件路径")
-    parser.add_argument("--mapping", default=None, help="映射规则 JSON 文件路径（用于异名组件对比）")
+    parser.add_argument("--mapping", default=None, nargs="+", help="映射规则 JSON 文件路径（支持多个，用于异名组件对比）")
     return parser.parse_args()
 
 
@@ -522,10 +522,12 @@ def main() -> None:
 
     mapping_rules = None
     if args.mapping is not None:
-        mapping_path = Path(args.mapping).expanduser().resolve()
-        if not mapping_path.exists():
-            raise FileNotFoundError(f"mapping file not found: {mapping_path}")
-        mapping_rules = _load_mapping_rules(mapping_path)
+        mapping_rules = []
+        for mapping_arg in args.mapping:
+            mapping_path = Path(mapping_arg).expanduser().resolve()
+            if not mapping_path.exists():
+                raise FileNotFoundError(f"mapping file not found: {mapping_path}")
+            mapping_rules.extend(_load_mapping_rules(mapping_path))
 
     comparison_rows = build_comparison_rows(base_entries, target_entries, mapping_rules)
 
