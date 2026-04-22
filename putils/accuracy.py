@@ -19,7 +19,7 @@ def hook_func(name, module, file_path):
 def hookt(str, t):
     def hook_tensor(grad):
         aprint(str,grad)
-    rank = torch.distributed.get_rank()
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
     if ifdebug():
         if rank == record_rank:
             aprint(f"forward {str}", t)

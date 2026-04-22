@@ -72,7 +72,7 @@ def report_memory(name, print_rank0_only=True):
         torch.npu.max_memory_reserved() / mega_bytes)
     
 
-    rank = torch.distributed.get_rank()
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
     device = torch_npu.npu.current_device()
     if not print_rank0_only or rank == 0:
         record_time = mprint("[Rank {} Device {}] {}".format(rank, device, string))
@@ -98,7 +98,7 @@ def pmemory(tmp_str):
     if True:
         _pmemory_used = True
         with torch.profiler.record_function(tmp+mem_str):
-            rank = torch.distributed.get_rank()
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
             device = torch_npu.npu.current_device()
             torch_npu.npu.reset_peak_memory_stats()
             torch.npu.reset_accumulated_memory_stats()
@@ -165,9 +165,9 @@ def get_tensor_size(tensor):
 
 # print model size
 def pmsize(model):
-    if torch.distributed.get_rank() == 0 and ifdebug():
+    if (torch.distributed.get_rank() if torch.distributed.is_initialized() else -1) == 0 and ifdebug():
         print(model)
-        print(f"world size is {torch.distributed.get_world_size()}", flush=True)
+        print(f"world size is {torch.distributed.get_world_size() if torch.distributed.is_initialized() else -1}", flush=True)
         for name, module in model.named_modules():
             print(f"\nLayer detail" , flush=True)
             for param_name, param in module.named_parameters():

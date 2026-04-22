@@ -81,13 +81,13 @@ def tprint(obj, name=""):
 
 # print part model weight
 def wprint(pmodel, name="wprint"):
-    rank =  torch.distributed.get_rank()
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
     for param_name, param in pmodel.named_parameters():
         tprint(param,f"{name} rank {rank} {param_name}")
 
 
 def dis_print(sth, sstr="", toTprint=True):
-    rank = torch.distributed.get_rank()
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
     from megatron.core import parallel_state
     dprank = parallel_state.get_data_parallel_rank()
     print_str = f"rank{rank} dp{dprank} {sstr} "

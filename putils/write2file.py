@@ -13,7 +13,7 @@ def log2file(content, prefix=""):
     :param prefix: 文件名前缀
     :param rank_id: 进程或rank编号
     """
-    rank_id=torch.distributed.get_rank()
+    rank_id=torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
 
     # 获取线程ID
     tid = threading.get_ident()

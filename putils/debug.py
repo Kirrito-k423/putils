@@ -97,5 +97,5 @@ def vscode_gdb(start_port=23325, end_port=24000,lock_file="/tmp/debugpy.lock"):
 # bt
 # n s 
 def bk():
-    if torch.distributed.get_rank() == 0:
+    if (torch.distributed.get_rank() if torch.distributed.is_initialized() else -1) == 0:
         breakpoint()
