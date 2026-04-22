@@ -171,12 +171,12 @@ def build_comparison_rows(
         match_type = "same_name"
         target_name = base_item.name
         if matched is None and mapping_rules:
-            resolved = _resolve_target_name(base_item.name, mapping_rules)
-            if resolved is not None:
+            for resolved in _resolve_target_names(base_item.name, mapping_rules):
                 matched = _try_match(resolved, base_item.size)
                 if matched is not None:
                     match_type = "mapped"
                     target_name = resolved
+                    break
 
         if matched is not None:
             target_row, target_item = matched
@@ -420,7 +420,7 @@ def _strip_hook_prefix_suffix(name: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
-def _resolve_target_name(base_name: str, mapping_rules: list[dict[str, str]]) -> str | None:
+def _resolve_target_names(base_name: str, mapping_rules: list[dict[str, str]]) -> list[str]:
     base_stripped = _strip_hook_prefix_suffix(base_name)
     if base_stripped is not None:
         core_name, io_tag = base_stripped
@@ -428,6 +428,7 @@ def _resolve_target_name(base_name: str, mapping_rules: list[dict[str, str]]) ->
         core_name = base_name
         io_tag = ""
 
+    results: list[str] = []
     for rule in mapping_rules:
         base_pat = re.compile(rule["base"])
         m = base_pat.fullmatch(core_name)
@@ -438,9 +439,9 @@ def _resolve_target_name(base_name: str, mapping_rules: list[dict[str, str]]) ->
         for gi in range(min(len(m.groups()), 9), 0, -1):
             target_core = target_core.replace(f"\\{gi}", m.group(gi) or "")
 
-        return f"[forward]: {target_core} {io_tag}" if io_tag else target_core
+        results.append(f"[forward]: {target_core} {io_tag}" if io_tag else target_core)
 
-    return None
+    return results
 
 
 def build_mapped_comparison_rows(
@@ -458,38 +459,42 @@ def build_mapped_comparison_rows(
     rows: list[list[Any]] = []
 
     for base_row, base_item in enumerate(base_entries):
-        target_name = _resolve_target_name(base_item.name, mapping_rules)
-        if target_name is None:
-            continue
-
-        indices = target_name_to_indices.get(target_name)
-        if indices is None:
-            continue
-
-        cursor = target_cursor[target_name]
-        while cursor < len(indices) and indices[cursor] in target_used:
-            cursor += 1
-        target_cursor[target_name] = cursor
-        if cursor >= len(indices):
-            continue
-
-        scan = cursor
-        while scan < len(indices):
-            if indices[scan] in target_used:
-                scan += 1
+        matched_target = None
+        for target_name in _resolve_target_names(base_item.name, mapping_rules):
+            indices = target_name_to_indices.get(target_name)
+            if indices is None:
                 continue
-            if base_item.size != target_entries[indices[scan]].size:
-                scan += 1
+
+            cursor = target_cursor[target_name]
+            while cursor < len(indices) and indices[cursor] in target_used:
+                cursor += 1
+            target_cursor[target_name] = cursor
+            if cursor >= len(indices):
                 continue
+
+            scan = cursor
+            while scan < len(indices):
+                if indices[scan] in target_used:
+                    scan += 1
+                    continue
+                if base_item.size != target_entries[indices[scan]].size:
+                    scan += 1
+                    continue
+                break
+
+            if scan >= len(indices):
+                continue
+
+            target_row = indices[scan]
+            target_used.add(target_row)
+            matched_target = (target_name, target_row, target_entries[target_row])
+            target_cursor[target_name] = cursor + 1
             break
 
-        if scan >= len(indices):
+        if matched_target is None:
             continue
 
-        target_row = indices[scan]
-        target_used.add(target_row)
-        target_item = target_entries[target_row]
-        target_cursor[target_name] = cursor + 1
+        target_name, target_row, target_item = matched_target
 
         l1_norm_diff_pct = None
         mean_diff_pct = None
