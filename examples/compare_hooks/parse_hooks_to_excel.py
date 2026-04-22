@@ -7,8 +7,8 @@
 输出包含 3~4 个工作表：
 1) base_parsed：base 日志解析结果
 2) target_parsed：target 日志解析结果
-3) comparison：同名项对比（hash/shape/l1_norm/mean/sum）
-4) compare_map（可选）：通过映射规则匹配的异名项对比，需提供 --mapping 参数
+3) comparison：同名匹配 + 映射匹配（需 --mapping）的完整对比
+4) compare_map（可选）：仅映射匹配的对比，需提供 --mapping 参数
 
 映射 JSON 格式示例：
     [
@@ -117,9 +117,11 @@ def _diff_pct(base_val: float, target_val: float) -> float:
 
 
 def build_comparison_rows(
-    base_entries: list[HookEntry], target_entries: list[HookEntry]
+    base_entries: list[HookEntry],
+    target_entries: list[HookEntry],
+    mapping_rules: list[dict[str, str]] | None = None,
 ) -> list[list[Any]]:
-    """双指针顺序遍历 base 和 target，按出现顺序配对同名项。"""
+    """双指针顺序遍历 base 和 target，先尝试同名匹配，再尝试映射匹配。"""
     rows: list[list[Any]] = []
 
     target_used: set[int] = set()
@@ -129,58 +131,77 @@ def build_comparison_rows(
 
     target_cursor: dict[str, int] = {name: 0 for name in target_name_to_indices}
 
-    for base_row, base_item in enumerate(base_entries):
-        name = base_item.name
+    def _try_match(name: str) -> tuple[int, Any] | None:
         indices = target_name_to_indices.get(name)
-        if indices is not None:
-            cursor = target_cursor[name]
-            while cursor < len(indices) and indices[cursor] in target_used:
-                cursor += 1
-            target_cursor[name] = cursor
+        if indices is None:
+            return None
+        cursor = target_cursor[name]
+        while cursor < len(indices) and indices[cursor] in target_used:
+            cursor += 1
+        target_cursor[name] = cursor
+        if cursor >= len(indices):
+            return None
+        target_row = indices[cursor]
+        target_used.add(target_row)
+        target_cursor[name] = cursor + 1
+        return target_row, target_entries[target_row]
 
-            if cursor < len(indices):
-                target_row = indices[cursor]
-                target_used.add(target_row)
-                target_item = target_entries[target_row]
-                target_cursor[name] = cursor + 1
+    for base_row, base_item in enumerate(base_entries):
+        matched = _try_match(base_item.name)
 
-                l1_norm_diff_pct = None
-                mean_diff_pct = None
-                sum_diff_pct = None
-                if base_item.l1_norm is not None and target_item.l1_norm is not None:
-                    l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
-                if base_item.mean is not None and target_item.mean is not None:
-                    mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
-                if base_item.sum_value is not None and target_item.sum_value is not None:
-                    sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
+        match_type = "same_name"
+        target_name = base_item.name
+        if matched is None and mapping_rules:
+            resolved = _resolve_target_name(base_item.name, mapping_rules)
+            if resolved is not None:
+                matched = _try_match(resolved)
+                if matched is not None:
+                    match_type = "mapped"
+                    target_name = resolved
 
-                rows.append(
-                    [
-                        name,
-                        base_row + 1,
-                        target_row + 1,
-                        base_item.hash_value == target_item.hash_value,
-                        base_item.shape == target_item.shape,
-                        base_item.l1_norm,
-                        target_item.l1_norm,
-                        l1_norm_diff_pct,
-                        base_item.mean,
-                        target_item.mean,
-                        mean_diff_pct,
-                        base_item.sum_value,
-                        target_item.sum_value,
-                        sum_diff_pct,
-                        base_item.hash_value,
-                        target_item.hash_value,
-                        base_item.shape,
-                        target_item.shape,
-                    ]
-                )
-                continue
+        if matched is not None:
+            target_row, target_item = matched
+            l1_norm_diff_pct = None
+            mean_diff_pct = None
+            sum_diff_pct = None
+            if base_item.l1_norm is not None and target_item.l1_norm is not None:
+                l1_norm_diff_pct = _diff_pct(base_item.l1_norm, target_item.l1_norm)
+            if base_item.mean is not None and target_item.mean is not None:
+                mean_diff_pct = _diff_pct(base_item.mean, target_item.mean)
+            if base_item.sum_value is not None and target_item.sum_value is not None:
+                sum_diff_pct = _diff_pct(base_item.sum_value, target_item.sum_value)
+
+            rows.append(
+                [
+                    base_item.name,
+                    target_name,
+                    match_type,
+                    base_row + 1,
+                    target_row + 1,
+                    base_item.hash_value == target_item.hash_value,
+                    base_item.shape == target_item.shape,
+                    base_item.l1_norm,
+                    target_item.l1_norm,
+                    l1_norm_diff_pct,
+                    base_item.mean,
+                    target_item.mean,
+                    mean_diff_pct,
+                    base_item.sum_value,
+                    target_item.sum_value,
+                    sum_diff_pct,
+                    base_item.hash_value,
+                    target_item.hash_value,
+                    base_item.shape,
+                    target_item.shape,
+                ]
+            )
+            continue
 
         rows.append(
             [
-                name,
+                base_item.name,
+                base_item.name,
+                "unmatched",
                 base_row + 1,
                 None,
                 False,
@@ -207,6 +228,8 @@ def build_comparison_rows(
         rows.append(
             [
                 target_item.name,
+                target_item.name,
+                "unmatched",
                 None,
                 target_row + 1,
                 False,
@@ -295,7 +318,9 @@ def _write_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) -> None:
     sheet = workbook.create_sheet(title="comparison")
     sheet.append(
         [
-            "name",
+            "base_name",
+            "target_name",
+            "match_type",
             "base_row",
             "target_row",
             "hash_match",
@@ -494,7 +519,15 @@ def main() -> None:
 
     base_entries = parse_hook_log(base_log)
     target_entries = parse_hook_log(target_log)
-    comparison_rows = build_comparison_rows(base_entries, target_entries)
+
+    mapping_rules = None
+    if args.mapping is not None:
+        mapping_path = Path(args.mapping).expanduser().resolve()
+        if not mapping_path.exists():
+            raise FileNotFoundError(f"mapping file not found: {mapping_path}")
+        mapping_rules = _load_mapping_rules(mapping_path)
+
+    comparison_rows = build_comparison_rows(base_entries, target_entries, mapping_rules)
 
     workbook = Workbook()
     active_sheet = workbook.active
@@ -505,11 +538,7 @@ def main() -> None:
     _write_parsed_sheet(workbook, "target_parsed", target_entries)
     _write_comparison_sheet(workbook, comparison_rows)
 
-    if args.mapping is not None:
-        mapping_path = Path(args.mapping).expanduser().resolve()
-        if not mapping_path.exists():
-            raise FileNotFoundError(f"mapping file not found: {mapping_path}")
-        mapping_rules = _load_mapping_rules(mapping_path)
+    if mapping_rules is not None:
         mapped_rows = build_mapped_comparison_rows(base_entries, target_entries, mapping_rules)
         _write_mapped_comparison_sheet(workbook, mapped_rows)
         print(f"Mapped comparison: {len(mapped_rows)} pairs matched via {len(mapping_rules)} rules")
