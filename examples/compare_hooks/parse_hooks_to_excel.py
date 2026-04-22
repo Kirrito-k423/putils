@@ -137,7 +137,7 @@ def build_comparison_rows(
 
     target_cursor: dict[str, int] = {name: 0 for name in target_name_to_indices}
 
-    def _try_match(name: str) -> tuple[int, Any] | None:
+    def _try_match(name: str, base_size: int | None = None) -> tuple[int, Any] | None:
         indices = target_name_to_indices.get(name)
         if indices is None:
             return None
@@ -147,20 +147,33 @@ def build_comparison_rows(
         target_cursor[name] = cursor
         if cursor >= len(indices):
             return None
-        target_row = indices[cursor]
+
+        scan = cursor
+        while scan < len(indices):
+            if indices[scan] in target_used:
+                scan += 1
+                continue
+            if base_size is not None and target_entries[indices[scan]].size != base_size:
+                scan += 1
+                continue
+            break
+
+        if scan >= len(indices):
+            return None
+
+        target_row = indices[scan]
         target_used.add(target_row)
-        target_cursor[name] = cursor + 1
         return target_row, target_entries[target_row]
 
     for base_row, base_item in enumerate(base_entries):
-        matched = _try_match(base_item.name)
+        matched = _try_match(base_item.name, base_item.size)
 
         match_type = "same_name"
         target_name = base_item.name
         if matched is None and mapping_rules:
             resolved = _resolve_target_name(base_item.name, mapping_rules)
             if resolved is not None:
-                matched = _try_match(resolved)
+                matched = _try_match(resolved, base_item.size)
                 if matched is not None:
                     match_type = "mapped"
                     target_name = resolved
@@ -457,11 +470,23 @@ def build_mapped_comparison_rows(
         while cursor < len(indices) and indices[cursor] in target_used:
             cursor += 1
         target_cursor[target_name] = cursor
-
         if cursor >= len(indices):
             continue
 
-        target_row = indices[cursor]
+        scan = cursor
+        while scan < len(indices):
+            if indices[scan] in target_used:
+                scan += 1
+                continue
+            if base_item.size != target_entries[indices[scan]].size:
+                scan += 1
+                continue
+            break
+
+        if scan >= len(indices):
+            continue
+
+        target_row = indices[scan]
         target_used.add(target_row)
         target_item = target_entries[target_row]
         target_cursor[target_name] = cursor + 1
