@@ -65,8 +65,14 @@ def tprint(obj, name=""):
                 tmp_min = obj.min()
             except Exception as e:
                 tmp_min = e
+            quantiles = [0.999, 0.99, 0.9, 0.5, 0.1, 0.01, 0.001]
+            try:
+                tmp_quantiles = torch.quantile(obj, torch.tensor(quantiles, dtype=obj.dtype))
+                quantile_str = " | ".join(f"q{q} {tmp_quantiles[i].item()}" for i, q in enumerate(quantiles))
+            except Exception as e:
+                quantile_str = f"quantiles_err {e}"
             mem_size=obj.element_size() * obj.numel() / 1024**3
-            tmp_str1= f"'{name}'| l1_norm {tmp_l1_norm} | {tensor_md5(obj)} | {origin_dtype} | {obj.shape} | continue: {obj.is_contiguous()} | mean {tmp_mean} | sum {obj.sum()} | max {tmp_max} | min {tmp_min} "
+            tmp_str1= f"'{name}'| l1_norm {tmp_l1_norm} | {tensor_md5(obj)} | {origin_dtype} | {obj.shape} | continue: {obj.is_contiguous()} | mean {tmp_mean} | sum {obj.sum()} | max {tmp_max} | min {tmp_min} | {quantile_str} "
             tmp_str1+= f"| Size {obj.numel()} | Memory size: {mem_size:.2f} GB | isNan {torch.isnan(obj).any()}"
             log_and_print(tmp_str1)
             tmp_str2=obj.flatten()[:10].tolist()
