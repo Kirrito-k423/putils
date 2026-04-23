@@ -412,10 +412,10 @@ def _add_pct_color_scale(sheet: Any) -> None:
         start_value=0,
         start_color="63BE7B",
         mid_type="num",
-        mid_value=5,
+        mid_value=0.3,
         mid_color="FFEB84",
         end_type="num",
-        end_value=20,
+        end_value=0.7,
         end_color="F8696B",
     )
 
