@@ -44,10 +44,17 @@ def aprint(name, tensors,file_path=''):
         else:
             log_and_print(f"{name} , {type(tensors)}")
 
-def tprint(obj, name=""):
+def _insert_slice_info(name, slice_info):
+    parts = name.rsplit(' ', 1)
+    if len(parts) == 2:
+        return f"{parts[0]}{slice_info} {parts[1]}"
+    return f"{name}{slice_info}"
+
+def tprint(obj, name="", _do_slice=True):
     if ifdebug():
         if torch.is_tensor(obj):
             origin_dtype=obj.dtype
+            original_obj = obj
             obj=obj.to(torch.float)
             try:
                 tmp_mean = obj.mean()
@@ -77,6 +84,19 @@ def tprint(obj, name=""):
             log_and_print(tmp_str1)
             tmp_str2=obj.flatten()[:10].tolist()
             log_and_print(tmp_str2)
+
+            if _do_slice and original_obj.dim() >= 2:
+                b_dim_size = original_obj.shape[0]
+                s_dim_size = original_obj.shape[1]
+                if b_dim_size > 1:
+                    tprint(original_obj[0], name=_insert_slice_info(name, '[B=0]'), _do_slice=False)
+                if b_dim_size > 10:
+                    tprint(original_obj[:10], name=_insert_slice_info(name, '[B=:10]'), _do_slice=False)
+                if b_dim_size >= 1 and s_dim_size > 1:
+                    tprint(original_obj[0, 0], name=_insert_slice_info(name, '[B=0,S=0]'), _do_slice=False)
+                if b_dim_size >= 1 and s_dim_size > 10:
+                    tprint(original_obj[0, :10], name=_insert_slice_info(name, '[B=0,S=:10]'), _do_slice=False)
+
             return tmp_str1, tmp_str2
         elif isinstance(obj, torch.nn.Module):
             total_params = sum(p.numel() for p in obj.parameters())
