@@ -1,14 +1,23 @@
-"""将两个 hooks 精度日志解析为 Excel 对比报告。
+"""将 hooks 精度日志解析为 Excel 对比报告。
 
-命令行：
+命令行（双日志模式，向后兼容）：
     python parse_hooks_to_excel.py --base-log <base.log> --target-log <target.log> --output <result.xlsx>
     python parse_hooks_to_excel.py --base-log <base.log> --target-log <target.log> --output <result.xlsx> --mapping <map1.json> <map2.json>
 
-输出包含 3~4 个工作表：
+命令行（多日志模式，支持 2~N 组日志两两对比）：
+    python parse_hooks_to_excel.py --logs vllm_infer=a.log vllm_rl=b.log lmdeploy_infer=c.log lmdeploy_rl=d.log --output <result.xlsx>
+    python parse_hooks_to_excel.py --logs vllm_infer=a.log vllm_rl=b.log lmdeploy_infer=c.log lmdeploy_rl=d.log --output <result.xlsx> --mapping <map.json>
+
+双日志模式输出包含 3~4 个工作表：
 1) base_parsed：base 日志解析结果
 2) target_parsed：target 日志解析结果
 3) comparison：同名匹配 + 映射匹配（需 --mapping）的完整对比
 4) compare_map（可选）：仅映射匹配的对比，需提供 --mapping 参数
+
+多日志模式输出包含：
+- 每组日志一个 {name}_parsed 工作表
+- 每对日志一个 cmp_{name1}_{name2} 对比工作表
+- 如提供 --mapping，每对额外生成一个 cmpmap_{name1}_{name2} 映射对比工作表
 
 映射 JSON 格式示例：
     [
@@ -425,38 +434,39 @@ def _add_pct_color_scale(sheet: Any) -> None:
         sheet.conditional_formatting.add(range_str, rule)
 
 
-def _write_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) -> None:
-    sheet = workbook.create_sheet(title="comparison")
-    sheet.append(
-        [
-            "base_name",
-            "target_name",
-            "match_type",
-            "base_row",
-            "target_row",
-            "hash_match",
-            "shape_match",
-            "base_l1_norm",
-            "target_l1_norm",
-            "l1_norm_diff_pct",
-            "base_mean",
-            "target_mean",
-            "mean_diff_pct",
-            "base_sum",
-            "target_sum",
-            "sum_diff_pct",
-            "base_max",
-            "target_max",
-            "max_diff_pct",
-            "base_min",
-            "target_min",
-            "min_diff_pct",
-            "base_hash",
-            "target_hash",
-            "base_shape",
-            "target_shape",
-        ]
-    )
+_COMPARISON_HEADER = [
+    "base_name",
+    "target_name",
+    "match_type",
+    "base_row",
+    "target_row",
+    "hash_match",
+    "shape_match",
+    "base_l1_norm",
+    "target_l1_norm",
+    "l1_norm_diff_pct",
+    "base_mean",
+    "target_mean",
+    "mean_diff_pct",
+    "base_sum",
+    "target_sum",
+    "sum_diff_pct",
+    "base_max",
+    "target_max",
+    "max_diff_pct",
+    "base_min",
+    "target_min",
+    "min_diff_pct",
+    "base_hash",
+    "target_hash",
+    "base_shape",
+    "target_shape",
+]
+
+
+def _write_comparison_sheet(workbook: Workbook, rows: list[list[Any]], sheet_name: str = "comparison") -> None:
+    sheet = workbook.create_sheet(title=sheet_name)
+    sheet.append(_COMPARISON_HEADER)
 
     for row in rows:
         sheet.append(row)
@@ -552,38 +562,9 @@ def build_mapped_comparison_rows(
     return rows
 
 
-def _write_mapped_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) -> None:
-    sheet = workbook.create_sheet(title="compare_map")
-    sheet.append(
-        [
-            "base_name",
-            "target_name",
-            "match_type",
-            "base_row",
-            "target_row",
-            "hash_match",
-            "shape_match",
-            "base_l1_norm",
-            "target_l1_norm",
-            "l1_norm_diff_pct",
-            "base_mean",
-            "target_mean",
-            "mean_diff_pct",
-            "base_sum",
-            "target_sum",
-            "sum_diff_pct",
-            "base_max",
-            "target_max",
-            "max_diff_pct",
-            "base_min",
-            "target_min",
-            "min_diff_pct",
-            "base_hash",
-            "target_hash",
-            "base_shape",
-            "target_shape",
-        ]
-    )
+def _write_mapped_comparison_sheet(workbook: Workbook, rows: list[list[Any]], sheet_name: str = "compare_map") -> None:
+    sheet = workbook.create_sheet(title=sheet_name)
+    sheet.append(_COMPARISON_HEADER)
 
     for row in rows:
         sheet.append(row)
@@ -593,15 +574,58 @@ def _write_mapped_comparison_sheet(workbook: Workbook, rows: list[list[Any]]) ->
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="将 hooks 日志解析为 Excel 对比文件")
-    parser.add_argument("--base-log", required=True, help="基准日志文件路径")
-    parser.add_argument("--target-log", required=True, help="目标日志文件路径")
+    parser.add_argument("--base-log", default=None, help="基准日志文件路径（双日志模式）")
+    parser.add_argument("--target-log", default=None, help="目标日志文件路径（双日志模式）")
+    parser.add_argument(
+        "--logs",
+        default=None,
+        nargs="+",
+        help="多日志模式：name=path 格式，如 vllm_infer=a.log vllm_rl=b.log lmdeploy_infer=c.log lmdeploy_rl=d.log",
+    )
     parser.add_argument("--output", required=True, help="输出 Excel 文件路径")
     parser.add_argument("--mapping", default=None, nargs="+", help="映射规则 JSON 文件路径（支持多个，用于异名组件对比）")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    has_legacy = args.base_log is not None or args.target_log is not None
+    has_multi = args.logs is not None
+
+    if has_legacy and has_multi:
+        parser.error("--base-log/--target-log 与 --logs 不可同时使用")
+    if not has_legacy and not has_multi:
+        parser.error("必须提供 --base-log + --target-log 或 --logs")
+
+    if has_legacy:
+        if args.base_log is None or args.target_log is None:
+            parser.error("双日志模式需同时提供 --base-log 和 --target-log")
+
+    if has_multi:
+        for item in args.logs:
+            if "=" not in item:
+                parser.error(f"--logs 参数格式错误: '{item}'，应为 name=path")
+
+    return args
 
 
-def main() -> None:
-    args = _parse_args()
+def _sanitize_sheet_name(name: str) -> str:
+    sanitized = name[:31]
+    for ch in ("\\", "/", "*", "?", ":", "[", "]"):
+        sanitized = sanitized.replace(ch, "_")
+    return sanitized
+
+
+def _load_mapping_rules_from_args(mapping_args: list[str] | None) -> list[dict[str, str]] | None:
+    if mapping_args is None:
+        return None
+    mapping_rules: list[dict[str, str]] = []
+    for mapping_arg in mapping_args:
+        mapping_path = Path(mapping_arg).expanduser().resolve()
+        if not mapping_path.exists():
+            raise FileNotFoundError(f"mapping file not found: {mapping_path}")
+        mapping_rules.extend(_load_mapping_rules(mapping_path))
+    return mapping_rules
+
+
+def _run_legacy_mode(args: argparse.Namespace) -> None:
     base_log = Path(args.base_log).expanduser().resolve()
     target_log = Path(args.target_log).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
@@ -615,15 +639,7 @@ def main() -> None:
 
     base_entries = parse_hook_log(base_log)
     target_entries = parse_hook_log(target_log)
-
-    mapping_rules = None
-    if args.mapping is not None:
-        mapping_rules = []
-        for mapping_arg in args.mapping:
-            mapping_path = Path(mapping_arg).expanduser().resolve()
-            if not mapping_path.exists():
-                raise FileNotFoundError(f"mapping file not found: {mapping_path}")
-            mapping_rules.extend(_load_mapping_rules(mapping_path))
+    mapping_rules = _load_mapping_rules_from_args(args.mapping)
 
     comparison_rows = build_comparison_rows(base_entries, target_entries, mapping_rules)
 
@@ -644,6 +660,61 @@ def main() -> None:
     workbook.save(output_path)
     print(f"Wrote Excel comparison file: {output_path}")
     print(f"Parsed entries - base: {len(base_entries)}, target: {len(target_entries)}")
+
+
+def _run_multi_log_mode(args: argparse.Namespace) -> None:
+    output_path = Path(args.output).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    named_entries: list[tuple[str, list[HookEntry]]] = []
+    for item in args.logs:
+        name, path_str = item.split("=", 1)
+        log_path = Path(path_str).expanduser().resolve()
+        if not log_path.exists():
+            raise FileNotFoundError(f"log not found: {log_path}")
+        entries = parse_hook_log(log_path)
+        named_entries.append((name, entries))
+        print(f"Parsed '{name}': {len(entries)} entries from {log_path}")
+
+    mapping_rules = _load_mapping_rules_from_args(args.mapping)
+
+    workbook = Workbook()
+    active_sheet = workbook.active
+    if active_sheet is not None:
+        workbook.remove(active_sheet)
+
+    for name, entries in named_entries:
+        sheet_name = _sanitize_sheet_name(f"{name}_parsed")
+        _write_parsed_sheet(workbook, sheet_name, entries)
+
+    n = len(named_entries)
+    for i in range(n):
+        for j in range(i + 1, n):
+            name_a, entries_a = named_entries[i]
+            name_b, entries_b = named_entries[j]
+            cmp_sheet = _sanitize_sheet_name(f"cmp_{name_a}_{name_b}")
+
+            comparison_rows = build_comparison_rows(entries_a, entries_b, mapping_rules)
+            _write_comparison_sheet(workbook, comparison_rows, sheet_name=cmp_sheet)
+            print(f"Comparison {name_a} vs {name_b}: {len(comparison_rows)} rows")
+
+            if mapping_rules is not None:
+                mapped_rows = build_mapped_comparison_rows(entries_a, entries_b, mapping_rules)
+                cmpmap_sheet = _sanitize_sheet_name(f"cmpmap_{name_a}_{name_b}")
+                _write_mapped_comparison_sheet(workbook, mapped_rows, sheet_name=cmpmap_sheet)
+                print(f"Mapped comparison {name_a} vs {name_b}: {len(mapped_rows)} pairs matched via {len(mapping_rules)} rules")
+
+    workbook.save(output_path)
+    print(f"Wrote Excel comparison file: {output_path}")
+
+
+def main() -> None:
+    args = _parse_args()
+
+    if args.logs is not None:
+        _run_multi_log_mode(args)
+    else:
+        _run_legacy_mode(args)
 
 
 if __name__ == "__main__":
