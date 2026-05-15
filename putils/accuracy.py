@@ -9,6 +9,7 @@ def hook_func(name, module, file_path):
     def hook_function(module, inputs, outputs):
         print("===========================================================================================")
         print("###########################################################################################")
+        # 在 full backward hook 中，这里的 inputs 表示该 module 前向输入对应的梯度（grad_input）。
         aprint(name+' inputs', inputs, file_path)
         aprint(name+' outputs', outputs, file_path)
         print("###########################################################################################")
@@ -18,12 +19,16 @@ def hook_func(name, module, file_path):
 
 def hookt(str, t):
     def hook_tensor(grad):
+        # 这里的 grad 是该 Tensor 在反向传播中收到的梯度，也就是 dLoss/dt。
+        # 如果 t 是某层的激活值，那么这里打印的是“这个激活值对应的梯度”，不是激活值本身。
         aprint(str,grad)
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
     if ifdebug():
         if rank == record_rank:
+            # 先打印前向得到的 Tensor 本身，方便和后面的反向梯度对照。
             aprint(f"forward {str}", t)
             if t.requires_grad:
+                # 注册 Tensor hook 后，backward 时会回调 hook_tensor(grad)。
                 t.register_hook(hook_tensor)
                 print(f"Tensor {str} hook success.")
             else:
