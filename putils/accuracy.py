@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import torch
 import torch.distributed
 
@@ -18,24 +21,85 @@ def hook_func(name, module, file_path):
 
 
 def hookt(str, t):
+    return hookt_dump(str, t)
+
+
+def _to_filename_safe(value):
+    return re.sub(r"[^0-9a-zA-Z_.-]+", "_", str(value)).strip("_")
+
+
+def _save_tensor_dump(name, phase, tensor, dump_dir):
+    dump_root = Path(dump_dir)
+    dump_root.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _to_filename_safe(name)
+    file_name = f"{safe_name}.{phase}.pt"
+    file_path = dump_root / file_name
+
+    dump_payload = {
+        "name": name,
+        "phase": phase,
+        "shape": list(tensor.shape),
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "tensor": tensor.detach().cpu(),
+    }
+    torch.save(dump_payload, file_path)
+    print(f"Tensor {name} {phase} dump saved: {file_path}")
+    return str(file_path)
+
+
+def hookt_dump(
+    name,
+    t,
+    dump_forward=True,
+    dump_backward=True,
+    dump_dir=None,
+    force_requires_grad=True,
+):
+    """
+    Hook one Tensor for forward/backward debug and optional dump.
+
+    Args:
+        name: Tensor tag used in logs and dump file names.
+        t: Tensor to hook.
+        dump_forward: Whether to print/dump forward tensor value.
+        dump_backward: Whether to print/dump backward gradient (dLoss/dt).
+        dump_dir: Optional directory for saving `.pt` dump files.
+        force_requires_grad: If True, set `t.requires_grad_(True)` when needed.
+    """
     def hook_tensor(grad):
-        # 这里的 grad 是该 Tensor 在反向传播中收到的梯度，也就是 dLoss/dt。
-        # 如果 t 是某层的激活值，那么这里打印的是“这个激活值对应的梯度”，不是激活值本身。
-        aprint(str,grad)
+        # grad 是该 Tensor 在反向传播中收到的梯度（dLoss/dt）。
+        if dump_backward:
+            aprint(f"backward {name}", grad)
+            if dump_dir:
+                _save_tensor_dump(name, "backward_grad", grad, dump_dir)
+
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
     if ifdebug():
         if rank == record_rank:
-            # 先打印前向得到的 Tensor 本身，方便和后面的反向梯度对照。
-            aprint(f"forward {str}", t)
+            # forward 阶段打印/落盘 Tensor 本身，便于和反向梯度对照。
+            if dump_forward:
+                aprint(f"forward {name}", t)
+                if dump_dir:
+                    _save_tensor_dump(name, "forward_tensor", t, dump_dir)
+
+            if not dump_backward:
+                return None
+
             if t.requires_grad:
-                # 注册 Tensor hook 后，backward 时会回调 hook_tensor(grad)。
-                t.register_hook(hook_tensor)
-                print(f"Tensor {str} hook success.")
-            else:
-                print(f"Tensor {str} does not require gradient. Skipping hook registration.")
-                t.requires_grad_(True)  # 显式启用梯度
-                t.register_hook(hook_tensor)
-                print(f"Tensor {str} force hook success.")
+                # backward 时会回调 hook_tensor(grad)。
+                handle = t.register_hook(hook_tensor)
+                print(f"Tensor {name} hook success.")
+                return handle
+
+            print(f"Tensor {name} does not require gradient. Skipping hook registration.")
+            if force_requires_grad:
+                t.requires_grad_(True)  # 显式启用梯度，便于调试捕获 dLoss/dt。
+                handle = t.register_hook(hook_tensor)
+                print(f"Tensor {name} force hook success.")
+                return handle
+    return None
 
 def _normalize_name_list(name_list):
     if name_list is None:

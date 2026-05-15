@@ -147,3 +147,43 @@ def test_hook_for_model_prints_copyable_structure_list(monkeypatch, capsys):
 
     for handle in handles:
         handle.remove()
+
+
+def test_hookt_dump_saves_forward_and_backward_payload(monkeypatch, tmp_path):
+    monkeypatch.setattr(accuracy, "ifdebug", lambda: True)
+    monkeypatch.setattr(accuracy, "record_rank", -1)
+
+    x = torch.tensor([1.0, 2.0, -3.0], requires_grad=True)
+    y = x * 2.0
+
+    handle = accuracy.hookt_dump(
+        "unit.tensor",
+        y,
+        dump_forward=True,
+        dump_backward=True,
+        dump_dir=tmp_path,
+    )
+    assert handle is not None
+
+    loss = y.sum()
+    loss.backward()
+    handle.remove()
+
+    forward_file = tmp_path / "unit.tensor.forward_tensor.pt"
+    backward_file = tmp_path / "unit.tensor.backward_grad.pt"
+
+    assert forward_file.exists()
+    assert backward_file.exists()
+
+    forward_payload = torch.load(forward_file)
+    backward_payload = torch.load(backward_file)
+
+    assert forward_payload["name"] == "unit.tensor"
+    assert forward_payload["phase"] == "forward_tensor"
+    assert list(forward_payload["tensor"].shape) == [3]
+    assert torch.equal(forward_payload["tensor"], torch.tensor([2.0, 4.0, -6.0]))
+
+    assert backward_payload["name"] == "unit.tensor"
+    assert backward_payload["phase"] == "backward_grad"
+    assert list(backward_payload["tensor"].shape) == [3]
+    assert torch.equal(backward_payload["tensor"], torch.ones(3))
