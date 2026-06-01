@@ -148,6 +148,7 @@ def _atomic_write_json(file_path: str, data: Any, indent: int = 2) -> None:
             tf.flush()
             os.fsync(tf.fileno())
         os.replace(tmp_path, file_path)
+        os.chmod(file_path, 0o755)
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
