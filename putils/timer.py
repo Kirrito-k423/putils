@@ -1,10 +1,59 @@
 import time
 import torch.distributed as dist
 from contextlib import contextmanager
+import torch
+import torch_npu
+import time
 from .write2file import log2file
 
 # 全局开关，用于控制是否输出耗时信息
 TIMER_VERBOSE = True
+
+
+class CUDAEVENT_TIMER():
+    def __init__(self):
+        self.events = {}
+        self.times = {}
+        self.cpu_times = []
+    def add_cpu(self):
+        torch.npu.synchronize()
+        self.cpu_times.append(time.time())
+
+    def add(self, label, group=None): #在当前位置添加cuda event
+        if label not in self.times:
+            self.times[label] = []
+            self.events[label] = []
+        stream = None
+        #process group用于通信打点
+        if group is not None:
+            collective_stream_id = group._get_backend(torch.device('npu'))._get_stream_id(False)
+            if collective_stream_id is None:
+                return
+            stream = torch_npu.npu.Stream(stream_id=collective_stream_id, device_type=20)
+
+        event = torch_npu.npu.Event(enable_timing=True)
+        event.record(stream=stream)
+        self.events[label].append(event)
+
+    def flush(self): #根据label对cuda event两两配对得出时间
+        torch.npu.synchronize()
+        for label in self.times:
+            if torch.npu.current_device()==0:
+                events = self.events[label]
+                if len(events)%2 != 0:
+                    print(f"got {len(events)} {label} events, should be paired")
+                else:
+                    for i in range(0, len(events), 2): 
+                        time = events[i].elapsed_time(events[i+1])
+                        self.times[label].append(time)
+                    print(f"\n、 {label} execute {len(self.times[label])} times, average time is {sum(self.times[label])/len(self.times[label])} ms, each time is: {self.times[label]}")
+        if torch.npu.current_device()==0 and len(self.cpu_times) == 2:
+            print(f"\n cpu_time: {(self.cpu_times[1] - self.cpu_times[0])*1000} ms")
+        self.cpu_times = []
+        self.events = {}
+        self.times = {}
+
+event_timer = CUDAEVENT_TIMER()     
 
 # with timer("sleep 1s"):
 #     time.sleep(1)
