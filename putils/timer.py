@@ -9,7 +9,8 @@ from .write2file import log2file
 # 全局开关，用于控制是否输出耗时信息
 TIMER_VERBOSE = True
 
-
+# |--Add下发--| |--target func下发--||--Add下发--|
+#                     |--空泡--| |--record--||--空泡--||--target func--| |--空泡--| |--record--|
 class CUDAEVENT_TIMER():
     def __init__(self):
         self.events = {}
