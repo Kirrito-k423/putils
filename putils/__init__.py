@@ -12,6 +12,7 @@ __all__ = [
     "debug",
     "device",
     "memory",
+    "npu_oom_debug",
     "perf",
     "pprint",
     "profiling",
