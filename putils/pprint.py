@@ -55,7 +55,6 @@ def tprint(obj, name="", _do_slice=True):
         if torch.is_tensor(obj):
             origin_dtype=obj.dtype
             original_obj = obj
-            obj=obj.to(torch.float)
             try:
                 tmp_mean = obj.mean()
             except Exception as e:
