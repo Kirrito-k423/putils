@@ -19,6 +19,7 @@
 - Multiple integrated debugging tools (debug, cache, timer, etc.)
 - NPU and CUDA environment support
 - Low-intrusive design, minimal changes to training code
+- NPU event timing for compute streams and communication streams ([guide](docs/event_timer.md))
 
 ### Tech Stack
 
@@ -80,6 +81,7 @@ putils/
 - 多种调试工具集成（debug、cache、timer等）
 - 支持NPU和CUDA环境
 - 低侵入式设计，最轻量化修改训练代码
+- NPU Event 计时，支持计算流和通信流打点（[使用手册](docs/event_timer.md)）
 
 ### 技术栈
 
